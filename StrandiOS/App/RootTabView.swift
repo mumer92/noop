@@ -52,7 +52,9 @@ struct RootTabView: View {
                 tab(TodayView(), "Today", "square.grid.2x2").tag(0)
                 tab(TrendsView(), "Trends", "chart.line.uptrend.xyaxis").tag(1)
                 tab(SleepView(), "Sleep", "bed.double").tag(2)
-                moreTab.tag(3)
+                // Design-review surface: the home-redesign concept gallery (live-wired to repo + LiveState).
+                tab(HomeConceptGallery(), "Concepts", "rectangle.3.group").tag(3)
+                moreTab.tag(4)
             }
             .tint(StrandPalette.accent)
             .toolbar(.hidden, for: .tabBar)
@@ -488,7 +490,8 @@ private struct FloatingTabBar: View {
     private let nav = [Item(title: "Today", icon: "square.grid.2x2", tag: 0),
                        Item(title: "Trends", icon: "chart.line.uptrend.xyaxis", tag: 1),
                        Item(title: "Sleep", icon: "bed.double", tag: 2),
-                       Item(title: "More", icon: "ellipsis", tag: 3)]
+                       Item(title: "Concepts", icon: "rectangle.3.group", tag: 3),
+                       Item(title: "More", icon: "ellipsis", tag: 4)]
 
     var body: some View {
         // One frosted glass bar, four evenly-spaced tabs. The quick-action "+" now lives in the
@@ -498,6 +501,7 @@ private struct FloatingTabBar: View {
             tabButton(nav[1])
             tabButton(nav[2])
             tabButton(nav[3])
+            tabButton(nav[4])
         }
         .padding(.vertical, 7)
         .padding(.horizontal, 8)
