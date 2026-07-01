@@ -1,6 +1,6 @@
 name: Strand
 options:
-  bundleIdPrefix: com.noopapp
+  bundleIdPrefix: com.mumer
   deploymentTarget:
     macOS: "13.0"
   createIntermediateGroups: true
@@ -27,7 +27,7 @@ settings:
     # extension. Referenced as $(APP_GROUP_ID) by both targets' entitlements and Info.plist, and read
     # at runtime via the AppGroupIdentifier Info.plist key (WidgetSnapshot.suiteName) so the value is
     # never hard-coded in Swift. Change it in this one place when building under your own Apple ID.
-    APP_GROUP_ID: group.com.noopapp.noop
+    APP_GROUP_ID: group.com.mumer.noop
     # Build for both Apple Silicon and Intel so the release runs on every Mac.
     ARCHS: "$(ARCHS_STANDARD)"
   configs:
@@ -50,6 +50,10 @@ packages:
     path: Packages/StrandImport
   StrandDesign:
     path: Packages/StrandDesign
+  # Pure, LAN-only local-network-sync primitives (framing, PSK, protocol, TLS-PSK params). No app deps,
+  # so it stays fast-testable via `swift test`; the app targets import it for the sync server/client.
+  StrandSync:
+    path: Packages/StrandSync
   # Clean-room local Oura ring BLE protocol (framing, auth, decoders, driver). Pure value types,
   # zero CoreBluetooth, so it stays headless/JVM-testable; the app target imports it for OuraLiveSource.
   OuraProtocol:
@@ -103,7 +107,7 @@ targets:
         com.apple.security.network.client: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.noopapp.noop
+        PRODUCT_BUNDLE_IDENTIFIER: com.mumer.noop
         PRODUCT_NAME: NOOP
         # Pin the Swift module name so `@testable import Strand` resolves even though PRODUCT_NAME is
         # NOOP — the test target and shared sources refer to the app module as `Strand`.
@@ -123,6 +127,7 @@ targets:
       - package: MarkdownUI
       - package: ZIPFoundation
       - package: OuraProtocol
+      - package: StrandSync
   StrandTests:
     type: bundle.unit-test
     platform: macOS
@@ -134,10 +139,11 @@ targets:
       - package: WhoopProtocol
       - package: WhoopStore
       - package: OuraProtocol
+      - package: StrandSync
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: com.noopapp.strandtests
+        PRODUCT_BUNDLE_IDENTIFIER: com.mumer.strandtests
         # Host the unit tests in the app so `@testable import Strand` links against the real app module.
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/NOOP.app/Contents/MacOS/NOOP"
         BUNDLE_LOADER: "$(TEST_HOST)"
@@ -248,7 +254,7 @@ targets:
           - $(APP_GROUP_ID)
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.noopapp.noop
+        PRODUCT_BUNDLE_IDENTIFIER: com.mumer.noop
         PRODUCT_NAME: NOOP
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Ship every *.appiconset (not just the primary AppIcon) so the alternate "AppIcon-Navy"
@@ -265,6 +271,7 @@ targets:
       - package: StrandDesign
       - package: MarkdownUI
       - package: ZIPFoundation
+      - package: StrandSync
       - target: NOOPiOSWidgets
       # Embed the watchOS app so the iPhone app carries it (NOOP.app/Watch/NOOPWatch.app). A watch app
       # installs by riding inside its iOS companion; without this it would never reach a paired watch.
@@ -307,7 +314,7 @@ targets:
           - $(APP_GROUP_ID)
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.noopapp.noop.widgets
+        PRODUCT_BUNDLE_IDENTIFIER: com.mumer.noop.widgets
         PRODUCT_NAME: NOOPWidgets
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -344,7 +351,7 @@ targets:
         # Modern single-target watchOS app — no separate WatchKit extension.
         WKApplication: true
         # Pairs this watch app to the iPhone companion (must match NOOPiOS PRODUCT_BUNDLE_IDENTIFIER).
-        WKCompanionAppBundleIdentifier: com.noopapp.noop
+        WKCompanionAppBundleIdentifier: com.mumer.noop
         NSHealthShareUsageDescription: "NOOP reads your heart rate from the Watch sensor to show a live readout on your wrist. It stays on your device."
         NSHealthUpdateUsageDescription: "NOOP records a basic workout session on your Watch for a higher-fidelity heart rate. The session stays on your device."
     entitlements:
@@ -356,7 +363,7 @@ targets:
           - $(APP_GROUP_ID)
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.noopapp.noop.watch
+        PRODUCT_BUNDLE_IDENTIFIER: com.mumer.noop.watch
         # The bundle FILE is NOOPWatch.app so it doesn't collide with the iPhone app's NOOP.app when it is
         # embedded at NOOP.app/Watch/NOOPWatch.app. The user still sees "NOOP" on the wrist via the
         # CFBundleName / CFBundleDisplayName above.
@@ -404,7 +411,7 @@ targets:
           - $(APP_GROUP_ID)
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.noopapp.noop.watch.complications
+        PRODUCT_BUNDLE_IDENTIFIER: com.mumer.noop.watch.complications
         PRODUCT_NAME: NOOPWatchComplications
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "4"
