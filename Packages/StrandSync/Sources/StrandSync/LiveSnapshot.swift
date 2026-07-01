@@ -7,6 +7,7 @@ public struct LiveSnapshot: Codable, Sendable, Equatable {
     public var heartRate: Int?
     public var connected: Bool
     public var bonded: Bool
+    public var encryptedBond: Bool    // full encrypted bond → "Controls unlocked" vs "Live HR only"
     public var batteryPct: Double?
     public var charging: Bool?
     public var worn: Bool
@@ -17,10 +18,11 @@ public struct LiveSnapshot: Codable, Sendable, Equatable {
     public var ts: Double             // epoch seconds, for ordering / staleness
 
     public init(heartRate: Int? = nil, connected: Bool = false, bonded: Bool = false,
-                batteryPct: Double? = nil, charging: Bool? = nil, worn: Bool = true,
-                rr: [Int] = [], rrRecent: [Int] = [], lastFrameType: String? = nil,
+                encryptedBond: Bool = false, batteryPct: Double? = nil, charging: Bool? = nil,
+                worn: Bool = true, rr: [Int] = [], rrRecent: [Int] = [], lastFrameType: String? = nil,
                 lastEvent: String? = nil, ts: Double = 0) {
         self.heartRate = heartRate; self.connected = connected; self.bonded = bonded
+        self.encryptedBond = encryptedBond
         self.batteryPct = batteryPct; self.charging = charging; self.worn = worn
         self.rr = rr; self.rrRecent = rrRecent; self.lastFrameType = lastFrameType
         self.lastEvent = lastEvent; self.ts = ts

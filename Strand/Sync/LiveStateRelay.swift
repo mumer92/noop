@@ -12,11 +12,12 @@ extension LiveState {
             heartRate: heartRate,
             connected: connected,
             bonded: bonded,
+            encryptedBond: encryptedBond,
             batteryPct: batteryPct,
             charging: charging,
             worn: worn,
             rr: Array(rr.suffix(8)),
-            rrRecent: Array(rrRecent.suffix(18)),
+            rrRecent: Array(rrRecent.suffix(60)),
             lastFrameType: lastFrameType,
             lastEvent: lastEvent,
             ts: Date().timeIntervalSince1970
@@ -29,6 +30,7 @@ extension LiveState {
         heartRate = s.heartRate
         connected = s.connected
         bonded = s.bonded
+        encryptedBond = s.encryptedBond
         batteryPct = s.batteryPct
         charging = s.charging
         worn = s.worn
@@ -44,6 +46,7 @@ extension LiveState {
         guard remoteSource != nil else { return }
         connected = false
         bonded = false
+        encryptedBond = false
         heartRate = nil
         batteryPct = nil
         charging = nil
