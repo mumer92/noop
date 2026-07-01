@@ -40,6 +40,9 @@ final class SyncCoordinator: ObservableObject {
     private var liveServer: SyncLiveServer?
     private let snapHolder = SnapshotHolder()
     private var cancellables = Set<AnyCancellable>()
+    /// Refreshes the outgoing live snapshot on a reliable main-actor cadence (RunLoop.main Combine
+    /// scheduling was dropping updates, freezing the snapshot before HR started flowing).
+    private var snapshotTask: Task<Void, Never>?
     // macOS
     private var browser: SyncBrowser?
     private var liveBrowser: SyncBrowser?
@@ -78,6 +81,7 @@ final class SyncCoordinator: ObservableObject {
     func stop() {
         server?.stop(); server = nil
         liveServer?.stop(); liveServer = nil
+        snapshotTask?.cancel(); snapshotTask = nil
         cancellables.removeAll()
         browser?.stop(); browser = nil
         liveBrowser?.stop(); liveBrowser = nil
@@ -142,14 +146,18 @@ final class SyncCoordinator: ObservableObject {
         do { try s.start(); server = s; state = .listening }
         catch { state = .error("Couldn't start sync: \(error.localizedDescription)") }
 
-        // Live server — streams the current snapshot ~1 Hz; refreshed from LiveState below.
+        // Live server — streams the current snapshot ~1 Hz. Keep the outgoing snapshot fresh with a
+        // main-actor timer loop (reads live HR/connection/battery every 0.4s), NOT objectWillChange +
+        // RunLoop.main (which dropped updates and froze the snapshot before HR arrived).
         liveServer?.stop()
-        cancellables.removeAll()
+        snapshotTask?.cancel()
         refreshSnapshotHolder()
-        live.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] in self?.refreshSnapshotHolder() }
-            .store(in: &cancellables)
+        snapshotTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                self?.refreshSnapshotHolder()
+                try? await Task.sleep(nanoseconds: 400_000_000)   // 0.4s
+            }
+        }
         let ls = SyncLiveServer(psk: psk, useBonjour: true, peerToPeer: false, interval: 1.0,
                                 snapshot: { [snapHolder] in snapHolder.get() },
                                 onCommand: { [weak self] cmd in Task { @MainActor in self?.commandHandler?(cmd) } })
