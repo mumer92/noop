@@ -184,6 +184,7 @@ struct SettingsView: View {
                     testCentreCard
                     experimentalCard
                     backupCard
+                    localSyncCard
                 }
                 .staggeredAppear(index: 6)
 
@@ -930,6 +931,31 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Open Test Centre")
+        }
+    }
+
+    /// Local-network sync (iPhone → Mac mirror over the LAN, no cloud). Opt-in; the detail screen handles
+    /// pairing + status.
+    private var localSyncCard: some View {
+        SettingsSection(
+            icon: "rectangle.2.swap",
+            title: "Local Sync",
+            blurb: "Mirror your data to your Mac (or from your iPhone) over the local network. No cloud, no account — nothing leaves your devices."
+        ) {
+            NavigationLink(destination: SyncSettingsView(coordinator: model.sync)) {
+                HStack {
+                    Text("Set up Local Sync")
+                        .font(StrandFont.body)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Set up Local Sync")
         }
     }
 

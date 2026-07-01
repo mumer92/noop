@@ -5,7 +5,7 @@ public enum SyncError: Error { case closed, noBackup, badMessage, timedOut }
 
 /// A resume-once guard so an `NWConnection` state handler (which can fire multiple states) never
 /// resumes a continuation twice.
-private final class OnceFlag {
+private final class OnceFlag: @unchecked Sendable {
     private var done = false
     private let lock = NSLock()
     func fire() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
@@ -24,6 +24,7 @@ public final class SyncConnection {
     /// A `timeout` guards against a stalled handshake so this can never hang forever.
     public func start(timeout: TimeInterval = 15) async throws {
         let once = OnceFlag()
+        let conn = self.conn   // capture the Sendable NWConnection, not self, in the @Sendable closures
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             conn.stateUpdateHandler = { state in
                 switch state {
@@ -34,8 +35,8 @@ public final class SyncConnection {
                 }
             }
             conn.start(queue: Self.queue)
-            Self.queue.asyncAfter(deadline: .now() + timeout) { [weak self] in
-                if once.fire() { self?.conn.cancel(); cont.resume(throwing: SyncError.timedOut) }
+            Self.queue.asyncAfter(deadline: .now() + timeout) {
+                if once.fire() { conn.cancel(); cont.resume(throwing: SyncError.timedOut) }
             }
         }
     }

@@ -234,6 +234,12 @@ targets:
         NSLocationWhenInUseUsageDescription: "NOOP records your route during an outdoor workout to show distance, pace, and a map, and keeps recording while the screen is off. The route stays on your device. Nothing leaves it."
         NSHealthShareUsageDescription: "NOOP reads your own Apple Health data on-device to compute recovery, strain, and sleep. Nothing leaves your device."
         NSHealthUpdateUsageDescription: "NOOP writes the metrics it computes from your strap back into Apple Health, on-device and only when you allow it."
+        # Local Sync (iPhone → Mac mirror over the LAN). Bonjour + a direct TLS-PSK connection to your own
+        # paired Mac; nothing leaves your local network. iOS 14+ requires both the purpose string and the
+        # declared Bonjour service type below.
+        NSLocalNetworkUsageDescription: "NOOP uses your local network to mirror your data to the NOOP app on your Mac on the same Wi-Fi. Nothing leaves your devices."
+        NSBonjourServices:
+          - _noopsync._tcp
         # #187: the opt-in AI Coach's "Custom (OpenAI-compatible)" provider can point at a LOCAL LLM on
         # the LAN (Ollama / LM Studio at http://192.168.x.x:11434). ATS blocks cleartext by default;
         # NSAllowsLocalNetworking exempts loopback/.local/private-LAN hosts ONLY — public HTTPS endpoints

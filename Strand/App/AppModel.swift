@@ -49,6 +49,8 @@ final class AppModel: ObservableObject {
     let ble: BLEManager
     /// Read model over the on-device store (dashboard + detail screens).
     let repo: Repository
+    /// Local-network sync coordinator (iPhone → Mac mirror). Opt-in; inert until enabled + paired.
+    let sync: SyncCoordinator
     /// User profile (age/sex/body/HR-max) for zones, calories, baselines.
     let profile = ProfileStore()
     /// Behaviour settings: double-tap action, wear automation, zone coaching, smart alarm, illness watch.
@@ -207,6 +209,7 @@ final class AppModel: ObservableObject {
         // the registry active id once the store opens. Single-device install keeps "my-whoop" throughout.
         self.ble = BLEManager(state: live, deviceId: deviceId)
         self.repo = Repository(deviceId: deviceId)
+        self.sync = SyncCoordinator(repo: repo)
         self.coach = AICoachEngine(repo: repo)
         self.intelligence = IntelligenceEngine(repo: repo, profile: profile, deviceId: deviceId)
         // Route the engine's per-day scoring diagnostic into the SAME shareable strap log every other
@@ -336,6 +339,7 @@ final class AppModel: ObservableObject {
             }
             #endif
             await self.repo.refresh()                          // surface any imported data at once
+            self.sync.startIfEnabled()                         // opt-in local-network sync (inert until paired)
             await self.wireSourceCoordinator()                 // dormant unless a generic strap is active
             try? await Task.sleep(nanoseconds: 6_000_000_000)  // give the first offload a moment
             // FIX 2(a): DEFER the heavy one-shot 4000-day heal/rescore while an import is in flight. A
