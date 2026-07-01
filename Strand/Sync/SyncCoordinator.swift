@@ -30,6 +30,8 @@ final class SyncCoordinator: ObservableObject {
 
     private let repo: Repository
     private let live: LiveState
+    /// Set by `AppModel` (iOS): dispatches a command received from a paired Mac to the strap.
+    var commandHandler: ((SyncCommand) -> Void)?
     private let enabledKey = "localsync.enabled"
     private let lastHashKey = "localsync.lastHash"
 
@@ -149,7 +151,8 @@ final class SyncCoordinator: ObservableObject {
             .sink { [weak self] in self?.refreshSnapshotHolder() }
             .store(in: &cancellables)
         let ls = SyncLiveServer(psk: psk, useBonjour: true, peerToPeer: false, interval: 1.0,
-                                snapshot: { [snapHolder] in snapHolder.get() })
+                                snapshot: { [snapHolder] in snapHolder.get() },
+                                onCommand: { [weak self] cmd in Task { @MainActor in self?.commandHandler?(cmd) } })
         try? ls.start()
         liveServer = ls
     }
@@ -213,6 +216,9 @@ final class SyncCoordinator: ObservableObject {
         guard !inFlight else { return }
         Task { await pullAndRestore(endpoint) }
     }
+
+    /// Send a command up to the paired iPhone (Mac → iPhone → band), e.g. `.buzz`.
+    func sendCommand(_ cmd: SyncCommand) { liveClient?.sendCommand(cmd) }
 
     private func pullAndRestore(_ endpoint: NWEndpoint) async {
         guard let peer = SyncPairing.load() else { return }

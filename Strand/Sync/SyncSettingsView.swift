@@ -1,5 +1,6 @@
 import SwiftUI
 import StrandDesign
+import StrandSync
 
 /// Settings screen for local-network sync. On iPhone: enable, show a 6-digit pairing code, view status.
 /// On Mac: enable, enter the iPhone's code, "Sync now", view status. Unpair on either.
@@ -31,6 +32,9 @@ struct SyncSettingsView: View {
                     enterCodeCard
                     #endif
                     statusCard
+                    #if os(macOS)
+                    if coordinator.pairedLabel != nil { remoteControlCard }
+                    #endif
                     if coordinator.pairedLabel != nil {
                         NoopButton("Unpair", kind: .destructive) {
                             coordinator.unpair(); enabled = false; shownCode = nil
@@ -78,6 +82,24 @@ struct SyncSettingsView: View {
                 HStack(spacing: 10) {
                     NoopButton("Pair", kind: .primary) { coordinator.pair(code: enteredCode) }
                     NoopButton("Sync now", kind: .secondary) { coordinator.syncNow() }
+                }
+            }
+        }
+    }
+    #endif
+
+    #if os(macOS)
+    /// Send actions to the iPhone to run on the strap (the band is bonded to the phone).
+    private var remoteControlCard: some View {
+        NoopCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("REMOTE CONTROL").strandOverline()
+                Text("Send an action to your iPhone to run on the strap.")
+                    .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                HStack(spacing: 10) {
+                    NoopButton("Buzz strap", kind: .primary) { coordinator.sendCommand(.buzz) }
+                    NoopButton("Start workout", kind: .secondary) { coordinator.sendCommand(.startWorkout(sport: "Workout")) }
+                    NoopButton("End", kind: .tertiary) { coordinator.sendCommand(.endWorkout) }
                 }
             }
         }

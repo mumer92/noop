@@ -44,6 +44,12 @@ public final class SyncLiveClient: @unchecked Sendable {
         }
     }
 
+    /// Send a command up to the iPhone over the live connection (Mac → iPhone → band).
+    public func sendCommand(_ cmd: SyncCommand) {
+        guard let c = conn else { return }
+        Task { try? await c.send(.command(cmd.encoded())) }
+    }
+
     public func disconnect() {
         task?.cancel(); task = nil
         conn?.cancel(); conn = nil

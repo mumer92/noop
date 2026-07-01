@@ -4,6 +4,7 @@ import WhoopProtocol
 import WhoopStore
 import StrandAnalytics
 import StrandImport
+import StrandSync
 #if os(iOS)
 import UserNotifications
 #endif
@@ -339,6 +340,8 @@ final class AppModel: ObservableObject {
             }
             #endif
             await self.repo.refresh()                          // surface any imported data at once
+            // Dispatch commands a paired Mac sends over the live channel to the strap (Mac → iPhone → band).
+            self.sync.commandHandler = { [weak self] cmd in self?.handleSyncCommand(cmd) }
             self.sync.startIfEnabled()                         // opt-in local-network sync (inert until paired)
             await self.wireSourceCoordinator()                 // dormant unless a generic strap is active
             try? await Task.sleep(nanoseconds: 6_000_000_000)  // give the first offload a moment
@@ -926,6 +929,17 @@ final class AppModel: ObservableObject {
     /// Fire a haptic buzz on the strap. patternId=2 is the graduated buzz confirmed on-device;
     /// `loops` sets the length. Used by the in-app test button and (later) notification alerts.
     /// Requires a bonded connection , no-op otherwise (the command characteristic is gated on bond).
+    /// Execute a command relayed from a paired Mac on the strap (the band is bonded to this iPhone, so
+    /// all band actions run here). Same entry points the iPhone's own UI uses.
+    func handleSyncCommand(_ cmd: SyncCommand) {
+        switch cmd {
+        case .buzz:                    buzz()
+        case .armAlarm(let ms):        ble.armStrapAlarm(at: Date(timeIntervalSince1970: Double(ms) / 1000))
+        case .startWorkout(let sport): startWorkout(sport: sport)
+        case .endWorkout:              endWorkout()
+        }
+    }
+
     func buzz(loops: UInt8 = 2) {
         ble.send(.runHapticsPattern, payload: [2, loops, 0, 0, 0])
     }
