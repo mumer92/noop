@@ -13,7 +13,7 @@ private final class OnceFlag: @unchecked Sendable {
 
 /// An async, framed-message wrapper over a single `NWConnection`. Sends/receives `SyncMessage`s using
 /// `SyncFraming`. Not tied to the app — pure transport, so the whole transfer is testable over loopback.
-public final class SyncConnection {
+public final class SyncConnection: @unchecked Sendable {
     private let conn: NWConnection
     private var inbound = Data()
     static let queue = DispatchQueue(label: "noop.localsync.conn")

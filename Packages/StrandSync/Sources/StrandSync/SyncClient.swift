@@ -31,7 +31,7 @@ public final class SyncClient {
             switch try await conn.receive() {
             case .backupChunk(let chunk): out.append(chunk)
             case .done: break loop
-            case .pullRequest: continue     // not expected from the server; ignore
+            default: continue               // ignore messages that aren't part of the history pull
             }
         }
 
