@@ -13,6 +13,7 @@ public final class SyncLiveServer: @unchecked Sendable {
     private let snapshot: @Sendable () -> LiveSnapshot
     private let revision: @Sendable () -> UInt64
     private let onCommand: @Sendable (SyncCommand) -> Void
+    private let settings: @Sendable () -> Data?
     private var listener: NWListener?
     private let lock = NSLock()
     private var active: [SyncConnection] = []
@@ -24,13 +25,15 @@ public final class SyncLiveServer: @unchecked Sendable {
                 interval: TimeInterval = 1.0,
                 snapshot: @escaping @Sendable () -> LiveSnapshot,
                 revision: @escaping @Sendable () -> UInt64 = { 0 },
-                onCommand: @escaping @Sendable (SyncCommand) -> Void = { _ in }) {
+                onCommand: @escaping @Sendable (SyncCommand) -> Void = { _ in },
+                settings: @escaping @Sendable () -> Data? = { nil }) {
         self.params = SyncTLS.parameters(psk: psk, peerToPeer: peerToPeer)
         self.useBonjour = useBonjour
         self.interval = interval
         self.snapshot = snapshot
         self.revision = revision
         self.onCommand = onCommand
+        self.settings = settings
     }
 
     public func start() throws {
@@ -63,14 +66,16 @@ public final class SyncLiveServer: @unchecked Sendable {
             // Concurrently: stream snapshots down, and receive commands up. When either side ends
             // (the connection dropped), cancel the other and return.
             let snapshot = self.snapshot, revision = self.revision, onCommand = self.onCommand
-            let interval = self.interval
+            let settings = self.settings, interval = self.interval
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
                     var lastRev = UInt64.max
+                    var lastSettings: Data? = nil
                     while true {
                         try await conn.send(.liveSnapshot(snapshot().encoded()))
                         let rev = revision()
                         if rev != lastRev { try await conn.send(.historyChanged(rev)); lastRev = rev }
+                        if let s = settings(), s != lastSettings { try await conn.send(.settings(s)); lastSettings = s }
                         try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                     }
                 }

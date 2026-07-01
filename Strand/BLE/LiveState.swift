@@ -111,10 +111,15 @@ public final class LiveState: ObservableObject {
     /// an estimate is sensible before the strap generation is known.
     @Published public var batteryRatedHours: Double = BatteryEstimator.ratedLifeHoursWhoop4
 
+    /// Set by the Local Sync relay (Mac mirroring an iPhone): the paired device's battery runway,
+    /// reconstructed from the flattened `LiveSnapshot` primitives. Takes precedence over the local
+    /// computation, which has no `batterySamples` on the Mac in relay mode.
+    @Published public var relayedBatteryEstimate: BatteryEstimator.Estimate? = nil
+
     /// "~X days left" runtime estimate for the connected strap, computed from the banked SoC samples and
     /// `batteryRatedHours`. nil until there's at least one reading. The Today badge reads this.
     public var batteryEstimate: BatteryEstimator.Estimate? {
-        BatteryEstimator.estimate(samples: batterySamples, ratedHours: batteryRatedHours)
+        relayedBatteryEstimate ?? BatteryEstimator.estimate(samples: batterySamples, ratedHours: batteryRatedHours)
     }
 
     /// The discharge-run / fitted-slope / gate trace for the banked SoC series (#713, Test Centre Battery

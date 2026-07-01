@@ -345,6 +345,28 @@ final class AppModel: ObservableObject {
             await self.repo.refresh()                          // surface any imported data at once
             // Dispatch commands a paired Mac sends over the live channel to the strap (Mac → iPhone → band).
             self.sync.commandHandler = { [weak self] cmd in self?.handleSyncCommand(cmd) }
+            // When this device is mirroring a paired iPhone (macOS), BLE-level strap actions triggered from
+            // views route to the iPhone instead of the Mac's own disconnected BLE. Inert on iOS (never relaying).
+            self.ble.commandRelay = { [weak self] cmd in
+                guard let self, self.sync.isRelaying else { return false }
+                self.sync.sendCommand(cmd)
+                return true
+            }
+            // Profile + settings mirror. iOS provides the current payload; macOS applies a relayed one into
+            // its own stores (so Fitness Age, Vitality, HR zones, units, key-metrics render correctly) and
+            // reverts to its own on unpair.
+            self.sync.settingsProvider = { [weak self] in
+                guard let self else { return nil }
+                return SyncSettingsBridge.current(profile: self.profile).encoded()
+            }
+            self.sync.settingsApplier = { [weak self] s in
+                guard let self else { return }
+                SyncSettingsBridge.apply(s, to: self.profile)
+            }
+            self.sync.settingsRestore = { [weak self] in
+                guard let self else { return }
+                SyncSettingsBridge.restoreOwn(profile: self.profile)
+            }
             self.sync.startIfEnabled()                         // opt-in local-network sync (inert until paired)
             await self.wireSourceCoordinator()                 // dormant unless a generic strap is active
             try? await Task.sleep(nanoseconds: 6_000_000_000)  // give the first offload a moment
@@ -515,6 +537,7 @@ final class AppModel: ObservableObject {
     /// `startWorkout(sport:)`). The active card on Live then shows elapsed time, live HR and strain
     /// building; End scores + saves it under this sport. Confirms with a single buzz. (#519)
     func startWorkout(sport: String = WorkoutCatalog.defaultSportName) {
+        if sync.isRelaying { sync.sendCommand(.startWorkout(sport: sport)); return }
         guard activeWorkout == nil else { return }
         lastWorkout = nil
         let name = sport.trimmingCharacters(in: .whitespaces)
@@ -610,6 +633,7 @@ final class AppModel: ObservableObject {
     /// as a `WorkoutRow`. A session with no HR window AND no real GPS route is discarded quietly (parity
     /// with Android) , but a GPS-only walk with HR not streaming still saves. Double-buzz confirms.
     func endWorkout() {
+        if sync.isRelaying { sync.sendCommand(.endWorkout); return }
         guard let w = activeWorkout else { return }
         activeWorkout = nil
         let wasGps = activeWorkoutIsGps
@@ -936,20 +960,31 @@ final class AppModel: ObservableObject {
     /// all band actions run here). Same entry points the iPhone's own UI uses.
     func handleSyncCommand(_ cmd: SyncCommand) {
         switch cmd {
-        case .buzz:                    buzz()
-        case .armAlarm(let ms):        ble.armStrapAlarm(at: Date(timeIntervalSince1970: Double(ms) / 1000))
-        case .startWorkout(let sport): startWorkout(sport: sport)
-        case .endWorkout:              endWorkout()
+        case .buzz:                      buzz()
+        case .buzzPattern(let p, let l): buzz(pattern: p, loops: l)
+        case .stopHaptics:               stopHaptics()
+        case .armAlarm(let ms):          ble.armStrapAlarm(at: Date(timeIntervalSince1970: Double(ms) / 1000))
+        case .disableAlarm:              ble.disableStrapAlarm()
+        case .startWorkout(let sport):   startWorkout(sport: sport)
+        case .endWorkout:                endWorkout()
+        case .startRealtime:             ble.startRealtime()
+        case .stopRealtime:              ble.stopRealtime()
+        case .syncNow:                   ble.syncNow()
+        case .scan:                      scan()
+        case .disconnect:                ble.disconnect()
+        case .refreshBattery:            ble.refreshBattery()
         }
     }
 
     func buzz(loops: UInt8 = 2) {
+        if sync.isRelaying { sync.sendCommand(.buzzPattern(pattern: 2, loops: loops)); return }
         ble.send(.runHapticsPattern, payload: [2, loops, 0, 0, 0])
     }
 
     /// Fire a specific preset haptic pattern (patternId 0–6 on Harvard; loops sets length).
     /// Used by the notification-pattern picker and coaching features.
     func buzz(pattern: UInt8, loops: UInt8 = 1) {
+        if sync.isRelaying { sync.sendCommand(.buzzPattern(pattern: pattern, loops: loops)); return }
         ble.send(.runHapticsPattern, payload: [pattern, loops, 0, 0, 0])
     }
 
@@ -967,6 +1002,7 @@ final class AppModel: ObservableObject {
     /// wedge, and we deliberately do not invent an unverified stop opcode. Safe to call always (no-op when
     /// unbonded or when the family doesn't accept it).
     func stopHaptics() {
+        if sync.isRelaying { sync.sendCommand(.stopHaptics); return }
         ble.send(.stopHaptics, payload: [0x00])
     }
 
@@ -1101,7 +1137,7 @@ final class AppModel: ObservableObject {
     /// an OS-level wake. macOS keeps just the firmware alarm (the static helpers are no-ops there).
     func applySmartAlarm() {
         guard behavior.smartAlarmEnabled else {
-            ble.disableStrapAlarm()
+            if sync.isRelaying { sync.sendCommand(.disableAlarm) } else { ble.disableStrapAlarm() }
             Self.cancelSmartAlarmBackupNotification()
             return
         }
@@ -1109,11 +1145,15 @@ final class AppModel: ObservableObject {
                                                  weekdays: behavior.smartAlarmWeekdays) else {
             // No enabled weekday in the next week (only possible from a corrupted set) , disarm rather
             // than arm a misleading time the user never asked for.
-            ble.disableStrapAlarm()
+            if sync.isRelaying { sync.sendCommand(.disableAlarm) } else { ble.disableStrapAlarm() }
             Self.cancelSmartAlarmBackupNotification()
             return
         }
-        ble.armStrapAlarm(at: next)
+        if sync.isRelaying {
+            sync.sendCommand(.armAlarm(epochMs: Int64(next.timeIntervalSince1970 * 1000)))
+        } else {
+            ble.armStrapAlarm(at: next)
+        }
         // Replace (remove + re-add by stable identifier) on every re-arm so the backup never stacks.
         Self.scheduleSmartAlarmBackupNotification(minutes: behavior.smartAlarmMinutes,
                                                   weekdays: behavior.smartAlarmWeekdays)

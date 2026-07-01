@@ -30,6 +30,7 @@ public enum SyncMessage: Equatable {
     case liveSnapshot(Data)     // server → client: one JSON-encoded LiveSnapshot
     case historyChanged(UInt64) // server → client: "my DB revision is now N" (client pulls if newer)
     case command(Data)          // client → server: one JSON-encoded SyncCommand (Mac → iPhone → band)
+    case settings(Data)         // server → client: one JSON-encoded SyncSettings (profile + prefs mirror)
 
     public var wireTag: UInt8 {
         switch self {
@@ -40,13 +41,14 @@ public enum SyncMessage: Equatable {
         case .liveSnapshot:   return 5
         case .historyChanged: return 6
         case .command:        return 7
+        case .settings:       return 8
         }
     }
 
     public func encoded() -> Data {
         var d = Data([wireTag])
         switch self {
-        case .backupChunk(let payload), .liveSnapshot(let payload), .command(let payload):
+        case .backupChunk(let payload), .liveSnapshot(let payload), .command(let payload), .settings(let payload):
             d.append(payload)
         case .historyChanged(let rev):
             var be = rev.bigEndian
@@ -71,6 +73,7 @@ public enum SyncMessage: Equatable {
             let rev = body.prefix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
             return .historyChanged(rev)
         case 7: return .command(body)
+        case 8: return .settings(body)
         default: return nil
         }
     }

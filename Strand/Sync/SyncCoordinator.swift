@@ -14,6 +14,14 @@ private final class SnapshotHolder: @unchecked Sendable {
     func get() -> LiveSnapshot { lock.lock(); defer { lock.unlock() }; return value }
 }
 
+/// Thread-safe holder for the latest encoded `SyncSettings` the iOS live server streams (change-driven).
+private final class DataHolder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Data?
+    func set(_ d: Data?) { lock.lock(); value = d; lock.unlock() }
+    func get() -> Data? { lock.lock(); defer { lock.unlock() }; return value }
+}
+
 /// The app-side brain for local-network sync. Two channels over one pairing:
 /// - **History** (iOS serves a `.noopbak`; macOS pulls + restores) — the whole-DB mirror.
 /// - **Live** (iOS streams `LiveSnapshot`; macOS applies to its `LiveState`) — live HR + "via iPhone".
@@ -32,6 +40,13 @@ final class SyncCoordinator: ObservableObject {
     private let live: LiveState
     /// Set by `AppModel` (iOS): dispatches a command received from a paired Mac to the strap.
     var commandHandler: ((SyncCommand) -> Void)?
+    /// Profile + settings mirror closures, set by `AppModel`. iOS: `settingsProvider` returns the current
+    /// encoded `SyncSettings`. macOS: `settingsApplier` applies a relayed payload; `settingsRestore` reverts
+    /// to the Mac's own settings on unpair.
+    var settingsProvider: (() -> Data?)?
+    var settingsApplier: ((SyncSettings) -> Void)?
+    var settingsRestore: (() -> Void)?
+    private let settingsHolder = DataHolder()
     private let enabledKey = "localsync.enabled"
     private let lastHashKey = "localsync.lastHash"
 
@@ -123,6 +138,7 @@ final class SyncCoordinator: ObservableObject {
         SyncPairing.clear()
         UserDefaults.standard.removeObject(forKey: lastHashKey)
         stop()
+        settingsRestore?()   // macOS: revert to this Mac's own profile/settings
         pairedLabel = nil
         isEnabled = false
         state = .off
@@ -168,12 +184,16 @@ final class SyncCoordinator: ObservableObject {
         }
         let ls = SyncLiveServer(psk: psk, useBonjour: true, peerToPeer: false, interval: 1.0,
                                 snapshot: { [snapHolder] in snapHolder.get() },
-                                onCommand: { [weak self] cmd in Task { @MainActor in self?.commandHandler?(cmd) } })
+                                onCommand: { [weak self] cmd in Task { @MainActor in self?.commandHandler?(cmd) } },
+                                settings: { [settingsHolder] in settingsHolder.get() })
         try? ls.start()
         liveServer = ls
     }
 
-    private func refreshSnapshotHolder() { snapHolder.set(live.snapshot()) }
+    private func refreshSnapshotHolder() {
+        snapHolder.set(live.snapshot())
+        settingsHolder.set(settingsProvider?())   // profile + prefs mirror (change-driven on the wire)
+    }
 
     private func makeBackup() async -> URL? {
         let dest = FileManager.default.temporaryDirectory
@@ -216,7 +236,8 @@ final class SyncCoordinator: ObservableObject {
             psk: SyncCrypto.psk(fromCode: peer.code), peerToPeer: false,
             onSnapshot: { [weak self] snap in Task { @MainActor in self?.live.applyRemote(snap, from: "iPhone") } },
             onHistoryChanged: { [weak self] _ in Task { @MainActor in self?.syncNow() } },
-            onConnectionChange: { [weak self] up in Task { @MainActor in if !up { self?.onLiveLinkDown() } } })
+            onConnectionChange: { [weak self] up in Task { @MainActor in if !up { self?.onLiveLinkDown() } } },
+            onSettings: { [weak self] s in Task { @MainActor in self?.settingsApplier?(s) } })
         client.connect(to: endpoint)
         liveClient = client
     }

@@ -3,6 +3,7 @@ import CoreBluetooth
 import WhoopProtocol
 import WhoopStore
 import StrandAnalytics
+import StrandSync
 
 /// Detects a marginal Bluetooth radio that can't sustain the WHOOP 4 R10/R11 raw realtime stream
 /// (#80). On a flaky radio (2016 Mac / OpenCore) the link dies the *instant* NOOP arms that
@@ -562,6 +563,12 @@ public final class BLEManager: NSObject, ObservableObject {
             if relayMode { log("Relay mode ON — using the iPhone's strap connection; not scanning locally."); disconnect() }
         }
     }
+
+    /// Set by `AppModel` (macOS): when the Mac is mirroring a paired iPhone, strap actions called here
+    /// route to the iPhone over Local Sync instead of the Mac's own (disconnected) BLE. Returns true when
+    /// the action was relayed, so the method early-returns. Only view-triggered actions carry this hook —
+    /// `disconnect()` deliberately does NOT (it's called internally by `relayMode.didSet`).
+    public var commandRelay: ((SyncCommand) -> Bool)?
     private var cmdCharacteristic: CBCharacteristic?
     private var cmdNotifyCharacteristic: CBCharacteristic?
     private var eventNotifyCharacteristic: CBCharacteristic?
@@ -808,6 +815,7 @@ public final class BLEManager: NSObject, ObservableObject {
 
     // MARK: Public API
     public func connect(model: WhoopModel = .persisted) {
+        if commandRelay?(.scan) == true { return }   // mirroring an iPhone — ask it to (re)connect
         intentionalDisconnect = false
         // #747/#750: a connect() that fires while the bond-loop pause is active can only be USER-initiated
         // (the pause suppresses the auto-reconnect schedulers), so re-arm: clear the give-up streak + pause
@@ -1233,6 +1241,7 @@ public final class BLEManager: NSObject, ObservableObject {
     /// flashed 100% before the true value corrected it (and a stub notification could revert a real
     /// 94% back to 100%). So WHOOP 4 uses ONLY the command; WHOOP 5/MG uses ONLY 0x2A19.
     public func refreshBattery() {
+        if commandRelay?(.refreshBattery) == true { return }
         guard state.connected, let p = peripheral, p.state == .connected else {
             log("refreshBattery ignored — not connected")
             return
@@ -1685,6 +1694,7 @@ public final class BLEManager: NSObject, ObservableObject {
     /// the R10/R11 realtime stream is also on. Keep that stream scoped to the Live tab and stop it
     /// on disappear so it does not permanently compete with historical offload.
     public func startRealtime() {
+        if commandRelay?(.startRealtime) == true { return }
         screenWantsRealtime = true
         state.liveFeedActive = true   // drives the menu-bar Start/Stop label off the real intent
         // The user explicitly (re-)asked for the full stream by opening Live / tapping Start HR — give the
@@ -1704,6 +1714,7 @@ public final class BLEManager: NSObject, ObservableObject {
     /// the reconciler sends it on the on→off edge of the combined want, so a Live screen closing while
     /// continuous capture is on keeps the dense stream flowing.
     public func stopRealtime() {
+        if commandRelay?(.stopRealtime) == true { return }
         screenWantsRealtime = false
         state.liveFeedActive = false   // flip the menu-bar toggle back to "Start live feed"
         // Always stop the heavy R10/R11 burst when the Live screen leaves — it's the battery-hungry part
@@ -1989,6 +2000,7 @@ public final class BLEManager: NSObject, ObservableObject {
     /// sync is already running). The caller (Health screen) only enables the control while connected, so
     /// a tap is meaningful; this guard is the belt-and-braces. Mirrors the Android `WhoopBleClient.syncNow`.
     public func syncNow() {
+        if commandRelay?(.syncNow) == true { return }
         guard state.connected, state.bonded else {
             log("Sync now: no strap connected — ignored.")
             return

@@ -6,8 +6,14 @@ import Network
 // MARK: - Protocol round-trips
 
 @Test func liveSnapshot_json_roundTrips() {
-    let s = LiveSnapshot(heartRate: 62, connected: true, bonded: true, batteryPct: 77,
-                         charging: false, worn: true, rr: [810, 795], ts: 123.5)
+    let s = LiveSnapshot(heartRate: 62, connected: true, bonded: true, encryptedBond: true,
+                         batteryPct: 77, charging: false, worn: true, rr: [810, 795],
+                         rrRecent: [810, 795, 802], lastFrameType: "REALTIME_DATA",
+                         lastEvent: "STRAP_CONDITION_REPORT", liveFeedActive: true,
+                         advertisingName: "NOOP", strapFirmware: "1.2.3", pairingHint: "hint",
+                         reconnectGuide: "guide", standardHRMode: "fallback",
+                         batteryRemainingHours: 41.5, batterySource: "measured",
+                         batteryCurrentSoc: 86, ts: 123.5)
     #expect(LiveSnapshot(data: s.encoded()) == s)
 }
 
@@ -16,6 +22,19 @@ import Network
     let payload = Data([1, 2, 3, 4])
     #expect(SyncMessage.decode(SyncMessage.liveSnapshot(payload).encoded()) == .liveSnapshot(payload))
     #expect(SyncMessage.decode(SyncMessage.historyChanged(4242).encoded()) == .historyChanged(4242))
+    #expect(SyncMessage.decode(SyncMessage.command(payload).encoded()) == .command(payload))
+    #expect(SyncMessage.decode(SyncMessage.settings(payload).encoded()) == .settings(payload))
+}
+
+@Test func syncSettings_json_roundTrips() {
+    let s = SyncSettings(age: 34, sex: "female", weightKg: 61, heightCm: 168, waistCm: 74,
+                         hrMaxOverride: 190, stepTicksPerStep: 1.0, stepsCalibrationCoefficient: 0.8,
+                         stepsCalibrationSampleDays: 5, stepsCalibrationConfidence: 0.9,
+                         stepsCalibrationManual: false, stepsManualCoefficient: 0,
+                         avatarImageData: Data([1, 2, 3]), unitsSystem: "imperial",
+                         unitsTemperature: "fahrenheit", effortScale: "whoop",
+                         keyMetrics: "charge,effort,rest", cycleAwareness: true, hydrationTracking: true)
+    #expect(SyncSettings(data: s.encoded()) == s)
 }
 
 // MARK: - Live loopback
@@ -46,7 +65,12 @@ private final class CommandBox: @unchecked Sendable {
 }
 
 @Test func syncCommand_roundTrips() {
-    let cases: [SyncCommand] = [.buzz, .armAlarm(epochMs: 1782), .startWorkout(sport: "Run"), .endWorkout]
+    let cases: [SyncCommand] = [
+        .buzz, .buzzPattern(pattern: 3, loops: 2), .stopHaptics,
+        .armAlarm(epochMs: 1782), .disableAlarm,
+        .startWorkout(sport: "Run"), .endWorkout,
+        .startRealtime, .stopRealtime, .syncNow, .scan, .disconnect, .refreshBattery,
+    ]
     for c in cases { #expect(SyncCommand(data: c.encoded()) == c) }
 }
 

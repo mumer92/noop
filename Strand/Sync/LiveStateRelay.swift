@@ -1,5 +1,6 @@
 import Foundation
 import StrandSync
+import StrandAnalytics
 
 /// Bridges `LiveState` to the local-network live relay: the iPhone maps its state into a `LiveSnapshot`
 /// to stream, and the Mac applies received snapshots back into its own `LiveState` so the dashboard's
@@ -20,6 +21,15 @@ extension LiveState {
             rrRecent: Array(rrRecent.suffix(60)),
             lastFrameType: lastFrameType,
             lastEvent: lastEvent,
+            liveFeedActive: liveFeedActive,
+            advertisingName: advertisingName,
+            strapFirmware: strapFirmware,
+            pairingHint: pairingHint,
+            reconnectGuide: reconnectGuide,
+            standardHRMode: standardHRMode,
+            batteryRemainingHours: batteryEstimate?.remainingHours,
+            batterySource: batteryEstimate?.source.rawValue,
+            batteryCurrentSoc: batteryEstimate?.currentSoc,
             ts: Date().timeIntervalSince1970
         )
     }
@@ -38,6 +48,18 @@ extension LiveState {
         setRelayedRRRecent(s.rrRecent)
         lastFrameType = s.lastFrameType
         lastEvent = s.lastEvent
+        liveFeedActive = s.liveFeedActive
+        advertisingName = s.advertisingName
+        strapFirmware = s.strapFirmware
+        pairingHint = s.pairingHint
+        reconnectGuide = s.reconnectGuide
+        standardHRMode = s.standardHRMode
+        if let hours = s.batteryRemainingHours, let soc = s.batteryCurrentSoc,
+           let src = s.batterySource.flatMap(BatteryEstimator.Source.init(rawValue:)) {
+            relayedBatteryEstimate = BatteryEstimator.Estimate(remainingHours: hours, source: src, currentSoc: soc)
+        } else {
+            relayedBatteryEstimate = nil
+        }
         remoteSource = source
     }
 
@@ -53,6 +75,13 @@ extension LiveState {
         setRelayedRRRecent([])
         lastFrameType = nil
         lastEvent = nil
+        liveFeedActive = false
+        advertisingName = nil
+        strapFirmware = nil
+        pairingHint = nil
+        reconnectGuide = nil
+        standardHRMode = nil
+        relayedBatteryEstimate = nil
         remoteSource = nil
     }
 }

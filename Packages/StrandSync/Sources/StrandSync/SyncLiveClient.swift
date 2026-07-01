@@ -10,24 +10,27 @@ public final class SyncLiveClient: @unchecked Sendable {
     private let onSnapshot: @Sendable (LiveSnapshot) -> Void
     private let onHistoryChanged: @Sendable (UInt64) -> Void
     private let onConnectionChange: @Sendable (Bool) -> Void
+    private let onSettings: @Sendable (SyncSettings) -> Void
     private var conn: SyncConnection?
     private var task: Task<Void, Never>?
 
     public init(psk: SymmetricKey, peerToPeer: Bool = false,
                 onSnapshot: @escaping @Sendable (LiveSnapshot) -> Void,
                 onHistoryChanged: @escaping @Sendable (UInt64) -> Void = { _ in },
-                onConnectionChange: @escaping @Sendable (Bool) -> Void = { _ in }) {
+                onConnectionChange: @escaping @Sendable (Bool) -> Void = { _ in },
+                onSettings: @escaping @Sendable (SyncSettings) -> Void = { _ in }) {
         self.params = SyncTLS.parameters(psk: psk, peerToPeer: peerToPeer)
         self.onSnapshot = onSnapshot
         self.onHistoryChanged = onHistoryChanged
         self.onConnectionChange = onConnectionChange
+        self.onSettings = onSettings
     }
 
     public func connect(to endpoint: NWEndpoint) {
         disconnect()
         let c = SyncConnection(NWConnection(to: endpoint, using: params))
         conn = c
-        task = Task { [onSnapshot, onHistoryChanged, onConnectionChange] in
+        task = Task { [onSnapshot, onHistoryChanged, onConnectionChange, onSettings] in
             do {
                 try await c.start()
                 try await c.send(.subscribeLive)
@@ -36,6 +39,7 @@ public final class SyncLiveClient: @unchecked Sendable {
                     switch try await c.receive() {
                     case .liveSnapshot(let data): if let s = LiveSnapshot(data: data) { onSnapshot(s) }
                     case .historyChanged(let rev): onHistoryChanged(rev)
+                    case .settings(let data): if let s = SyncSettings(data: data) { onSettings(s) }
                     default: break
                     }
                 }
