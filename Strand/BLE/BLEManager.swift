@@ -552,6 +552,16 @@ public final class BLEManager: NSObject, ObservableObject {
     /// Non-nil signals that `centralManagerDidUpdateState` should reconnect this
     /// specific peripheral rather than starting a fresh scan.
     private var restoredPeripheral: CBPeripheral?
+    /// macOS relay mode: when the Mac is mirroring a paired iPhone's live data over Local Sync, it must
+    /// NOT connect to the strap itself (the strap is bonded to the iPhone). Set true by `AppModel` when
+    /// `LiveState.remoteSource` is active; gates auto-connect + scanning and drops any local link so the
+    /// Mac uses the iPhone's connection instead of fighting the strap. On iOS it stays false.
+    public var relayMode: Bool = false {
+        didSet {
+            guard relayMode != oldValue else { return }
+            if relayMode { log("Relay mode ON — using the iPhone's strap connection; not scanning locally."); disconnect() }
+        }
+    }
     private var cmdCharacteristic: CBCharacteristic?
     private var cmdNotifyCharacteristic: CBCharacteristic?
     private var eventNotifyCharacteristic: CBCharacteristic?
@@ -2042,6 +2052,7 @@ public final class BLEManager: NSObject, ObservableObject {
     /// `scanFallbackDelaySeconds` of no discovery — recovers reconnect when the persisted preference is
     /// stale after an update/restore. Discovery/connect cancels the pending rotation. (PR#195)
     private func startScan(for model: WhoopModel, allowFallback: Bool) {
+        guard !relayMode else { return }   // mirroring the iPhone over Local Sync — don't scan locally
         cancelScanFallback()
         selectedModel = model
         reassembler = Reassembler(family: model.deviceFamily)
@@ -2299,6 +2310,7 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         log("Central state: \(central.state.rawValue) (5 = poweredOn)")
         guard central.state == .poweredOn else { return }
+        guard !relayMode else { log("Relay mode: relying on the iPhone, not connecting locally."); return }
         // Bootstrap the async store once on first poweredOn (idempotent if already set).
         Task { @MainActor in await bootstrapStore() }
         if let p = restoredPeripheral {

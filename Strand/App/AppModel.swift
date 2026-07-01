@@ -227,6 +227,9 @@ final class AppModel: ObservableObject {
         // Smooth HR centrally so it's solid everywhere it's shown.
         live.$heartRate.sink { [weak self] _ in self?.ingestHR() }.store(in: &hrCancellables)
         live.$rr.sink { [weak self] _ in self?.ingestHR() }.store(in: &hrCancellables)
+        // Local Sync relay: when this device is mirroring a paired iPhone (macOS), stop the Mac's own
+        // strap BLE and use the iPhone's connection. On iOS `remoteSource` stays nil, so this is inert.
+        live.$remoteSource.sink { [weak self] src in self?.ble.relayMode = (src != nil) }.store(in: &hrCancellables)
 
         // Physical-input + wear hooks (fired live by FrameRouter).
         live.onDoubleTap = { [weak self] in self?.handleDoubleTap() }
