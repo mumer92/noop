@@ -1,24 +1,27 @@
 import Foundation
 import Network
 import CryptoKit
+import Combine
 import StrandSync
 import WhoopStore
 
-/// The app-side brain for local-network sync. On iOS it runs a `SyncServer` that advertises the strap
-/// data and serves a `.noopbak` to the paired Mac; on macOS it runs a `SyncBrowser` + `SyncClient`,
-/// pulling the iPhone's backup and restoring it via `DataBackup`. One-way (iPhone → Mac), opt-in, and
-/// only active once paired. Observable so the Settings screen can show status.
+/// Thread-safe holder for the latest `LiveSnapshot` the iOS live server streams. The server reads it
+/// from a background queue; the coordinator refreshes it on the main actor whenever `LiveState` changes.
+private final class SnapshotHolder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = LiveSnapshot()
+    func set(_ s: LiveSnapshot) { lock.lock(); value = s; lock.unlock() }
+    func get() -> LiveSnapshot { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+/// The app-side brain for local-network sync. Two channels over one pairing:
+/// - **History** (iOS serves a `.noopbak`; macOS pulls + restores) — the whole-DB mirror.
+/// - **Live** (iOS streams `LiveSnapshot`; macOS applies to its `LiveState`) — live HR + "via iPhone".
+/// One-way (iPhone → Mac), opt-in, LAN-only, active once paired.
 @MainActor
 final class SyncCoordinator: ObservableObject {
     enum State: Equatable {
-        case off              // disabled or not paired
-        case waitingForPair   // enabled, needs a code
-        case listening        // iPhone: advertising
-        case discovering      // Mac: looking for the iPhone
-        case syncing          // Mac: transferring
-        case upToDate         // Mac: nothing new
-        case needsRestart     // Mac: restored — relaunch to load it
-        case error(String)
+        case off, waitingForPair, listening, discovering, syncing, upToDate, needsRestart, error(String)
     }
 
     @Published private(set) var state: State = .off
@@ -26,18 +29,25 @@ final class SyncCoordinator: ObservableObject {
     @Published private(set) var pairedLabel: String?
 
     private let repo: Repository
+    private let live: LiveState
     private let enabledKey = "localsync.enabled"
     private let lastHashKey = "localsync.lastHash"
 
     // iOS
     private var server: SyncServer?
+    private var liveServer: SyncLiveServer?
+    private let snapHolder = SnapshotHolder()
+    private var cancellables = Set<AnyCancellable>()
     // macOS
     private var browser: SyncBrowser?
+    private var liveBrowser: SyncBrowser?
+    private var liveClient: SyncLiveClient?
     private var currentEndpoint: NWEndpoint?
     private var inFlight = false
 
-    init(repo: Repository) {
+    init(repo: Repository, live: LiveState) {
         self.repo = repo
+        self.live = live
         pairedLabel = SyncPairing.load() != nil ? "Paired" : nil
         if let d = UserDefaults.standard.object(forKey: "localsync.lastSync") as? Date { lastSync = d }
     }
@@ -65,13 +75,18 @@ final class SyncCoordinator: ObservableObject {
 
     func stop() {
         server?.stop(); server = nil
+        liveServer?.stop(); liveServer = nil
+        cancellables.removeAll()
         browser?.stop(); browser = nil
+        liveBrowser?.stop(); liveBrowser = nil
+        liveClient?.disconnect(); liveClient = nil
+        live.clearRemote()
         currentEndpoint = nil
     }
 
     // MARK: Pairing / enable
 
-    /// iOS: generate + persist a fresh code, (re)start the server, return the code to show the user.
+    /// iOS: generate + persist a fresh code, (re)start the servers, return the code to show the user.
     func showPairingCode() -> String {
         let code = SyncCrypto.generateCode()
         SyncPairing.save(PairedPeer(code: code, identity: "peer"))
@@ -107,21 +122,39 @@ final class SyncCoordinator: ObservableObject {
         state = .off
     }
 
-    // MARK: iOS server
+    // MARK: iOS servers (history + live)
 
     #if os(iOS)
     private func startServer() {
         guard let peer = SyncPairing.load() else { state = .waitingForPair; return }
+        let psk = SyncCrypto.psk(fromCode: peer.code)
+
+        // History server
         server?.stop()
         let advert = SyncAdvert(rev: UInt64(repo.days.count),
                                 day: repo.days.last?.day ?? "",
                                 v: WhoopStoreInfo.schemaVersion)
-        let s = SyncServer(psk: SyncCrypto.psk(fromCode: peer.code), identity: "iphone",
+        let s = SyncServer(psk: psk, identity: "iphone", peerToPeer: false,
                            advert: { advert },
                            makeBackup: { [weak self] in await self?.makeBackup() })
         do { try s.start(); server = s; state = .listening }
         catch { state = .error("Couldn't start sync: \(error.localizedDescription)") }
+
+        // Live server — streams the current snapshot ~1 Hz; refreshed from LiveState below.
+        liveServer?.stop()
+        cancellables.removeAll()
+        refreshSnapshotHolder()
+        live.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.refreshSnapshotHolder() }
+            .store(in: &cancellables)
+        let ls = SyncLiveServer(psk: psk, useBonjour: true, peerToPeer: false, interval: 1.0,
+                                snapshot: { [snapHolder] in snapHolder.get() })
+        try? ls.start()
+        liveServer = ls
     }
+
+    private func refreshSnapshotHolder() { snapHolder.set(live.snapshot()) }
 
     private func makeBackup() async -> URL? {
         let dest = FileManager.default.temporaryDirectory
@@ -132,17 +165,24 @@ final class SyncCoordinator: ObservableObject {
     }
     #endif
 
-    // MARK: macOS browser + pull + restore
+    // MARK: macOS browsers + pull/restore + live apply
 
     #if os(macOS)
     private func startBrowser() {
-        browser?.stop()
         state = .discovering
-        let b = SyncBrowser(onEndpoint: { [weak self] endpoint in
+        // History discovery → pull + restore
+        browser?.stop()
+        let b = SyncBrowser(type: "_noopsync._tcp", onEndpoint: { [weak self] endpoint in
             Task { @MainActor in self?.handleEndpoint(endpoint) }
         })
-        b.start()
-        browser = b
+        b.start(); browser = b
+
+        // Live discovery → subscribe + apply snapshots
+        liveBrowser?.stop()
+        let lb = SyncBrowser(type: "_noopsync-live._tcp", onEndpoint: { [weak self] endpoint in
+            Task { @MainActor in self?.connectLive(endpoint) }
+        })
+        lb.start(); liveBrowser = lb
     }
 
     private func handleEndpoint(_ endpoint: NWEndpoint) {
@@ -151,7 +191,23 @@ final class SyncCoordinator: ObservableObject {
         Task { await pullAndRestore(endpoint) }
     }
 
-    /// Manual "Sync now": pull from the last-seen peer immediately.
+    private func connectLive(_ endpoint: NWEndpoint) {
+        guard liveClient == nil, let peer = SyncPairing.load() else { return }   // connect once
+        let client = SyncLiveClient(
+            psk: SyncCrypto.psk(fromCode: peer.code), peerToPeer: false,
+            onSnapshot: { [weak self] snap in Task { @MainActor in self?.live.applyRemote(snap, from: "iPhone") } },
+            onHistoryChanged: { [weak self] _ in Task { @MainActor in self?.syncNow() } },
+            onConnectionChange: { [weak self] up in Task { @MainActor in if !up { self?.onLiveLinkDown() } } })
+        client.connect(to: endpoint)
+        liveClient = client
+    }
+
+    private func onLiveLinkDown() {
+        live.clearRemote()
+        liveClient = nil   // allow a future discovery to reconnect
+    }
+
+    /// Manual "Sync now": pull the DB from the last-seen peer immediately.
     func syncNow() {
         guard let endpoint = currentEndpoint else { state = .discovering; return }
         guard !inFlight else { return }
@@ -164,7 +220,7 @@ final class SyncCoordinator: ObservableObject {
         state = .syncing
         defer { inFlight = false }
         do {
-            let client = SyncClient(psk: SyncCrypto.psk(fromCode: peer.code), identity: "mac")
+            let client = SyncClient(psk: SyncCrypto.psk(fromCode: peer.code), identity: "mac", peerToPeer: false)
             let url = try await client.pull(from: endpoint)
             let data = try Data(contentsOf: url)
             let hex = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -180,7 +236,9 @@ final class SyncCoordinator: ObservableObject {
                 UserDefaults.standard.set(hex, forKey: lastHashKey)
                 lastSync = Date()
                 UserDefaults.standard.set(lastSync, forKey: "localsync.lastSync")
-                state = .needsRestart
+                // Reopen the restored database in-process and reload the dashboards — no relaunch needed.
+                await repo.reopenAfterRestore()
+                state = .upToDate
             case .failure(let message):
                 state = .error(message)
             default:

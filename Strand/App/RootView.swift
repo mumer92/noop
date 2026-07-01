@@ -411,7 +411,7 @@ private struct SidebarStatus: View {
                 Text(statusText)
                     .font(StrandFont.rounded(12, weight: .medium))
                     .foregroundStyle(StrandPalette.textPrimary)
-                Text(live.batteryPct.map { "Battery \(Int($0))%" } ?? "Strap not connected")
+                Text(detailText)
                     .font(StrandFont.rounded(11))
                     .foregroundStyle(StrandPalette.textTertiary)
             }
@@ -430,5 +430,12 @@ private struct SidebarStatus: View {
     }
     private var statusText: String {
         live.connectionStatusLabel
+    }
+    /// Battery / connection detail, plus a "via <source>" tag when the live state is RELAYED from a
+    /// paired device (the Mac has no local strap — it's mirroring the iPhone).
+    private var detailText: String {
+        let base = live.batteryPct.map { "Battery \(Int($0))%" } ?? (live.connected ? "Connected" : "Strap not connected")
+        if let src = live.remoteSource { return "\(base) · via \(src)" }
+        return base
     }
 }

@@ -420,6 +420,15 @@ final class Repository: ObservableObject {
     /// Expose the shared store handle (used by the importer to persist mapped rows).
     func storeHandle() async -> WhoopStore? { await ensureStore() }
 
+    /// After Local Sync (or any restore) replaces the database file on disk, drop the open store so the
+    /// next access reopens the freshly-restored file, then reload the dashboards. This lets a restore
+    /// take effect WITHOUT relaunching the app — `ensureStore()` returns the cached store while it's
+    /// non-nil, so we must clear it first, then `refresh()` re-opens the new file and re-publishes `days`.
+    func reopenAfterRestore() async {
+        store = nil          // releasing the old WhoopStore closes its GRDB pool on the now-replaced file
+        await refresh()      // ensureStore() re-opens the restored file; refresh reloads `days` + bumps refreshSeq
+    }
+
     /// CAPTURE-D (#797): the on-device DATA VOLUME read FRESH from the STORE (never the `@Published`
     /// dashboard caches), for the Display & Performance test mode's `dataVolume` line. dbRows is the raw
     /// decoded-stream footprint; importedDays is the count of imported daily-metric rows under the active

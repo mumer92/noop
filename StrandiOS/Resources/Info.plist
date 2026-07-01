@@ -53,6 +53,7 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_noopsync._tcp</string>
+		<string>_noopsync-live._tcp</string>
 	</array>
 	<key>NSHealthShareUsageDescription</key>
 	<string>NOOP reads your own Apple Health data on-device to compute recovery, strain, and sleep. Nothing leaves your device.</string>

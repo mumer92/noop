@@ -9,6 +9,10 @@ import WhoopProtocol
 @MainActor
 public final class LiveState: ObservableObject {
     @Published public var connected: Bool = false
+    /// When non-nil, the live state is being RELAYED from a paired device over the local network (e.g.
+    /// "iPhone") rather than a local strap — the UI labels the connection badge accordingly. See
+    /// `applyRemote` / `clearRemote` (Strand/Sync/LiveStateRelay.swift). nil = local strap (or nothing).
+    @Published public var remoteSource: String? = nil
     // NOTE: do NOT auto-clear `pairingHint` when `bonded` flips true. On a 5/MG, `bonded` is also set by
     // the live-HR shortcut (BLEManager — HR over the unbonded standard profile), so clearing the hint
     // there hides the still-accurate "free the strap" guidance from users who are streaming HR but never
