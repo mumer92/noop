@@ -13,6 +13,10 @@ public final class LiveState: ObservableObject {
     /// "iPhone") rather than a local strap — the UI labels the connection badge accordingly. See
     /// `applyRemote` / `clearRemote` (Strand/Sync/LiveStateRelay.swift). nil = local strap (or nothing).
     @Published public var remoteSource: String? = nil
+
+    /// Set the relayed R-R buffer from the Local Sync relay. `rrRecent`'s setter is file-private, so the
+    /// relay extension (a different file) sets it through this same-file helper.
+    func setRelayedRRRecent(_ v: [Int]) { rrRecent = v }
     // NOTE: do NOT auto-clear `pairingHint` when `bonded` flips true. On a 5/MG, `bonded` is also set by
     // the live-HR shortcut (BLEManager — HR over the unbonded standard profile), so clearing the hint
     // there hides the still-accurate "free the strap" guidance from users who are streaming HR but never

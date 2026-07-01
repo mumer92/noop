@@ -128,6 +128,14 @@ final class SyncCoordinator: ObservableObject {
         state = .off
     }
 
+    /// Send a command up to the paired iPhone (Mac → iPhone → band), e.g. `.buzz`. On iOS `liveClient`
+    /// is always nil (iOS is the source, not a subscriber), so this is a no-op there.
+    func sendCommand(_ cmd: SyncCommand) { liveClient?.sendCommand(cmd) }
+
+    /// True when this device is mirroring a paired iPhone over the live relay (so strap controls should
+    /// piggyback the iPhone rather than the local BLE).
+    var isRelaying: Bool { live.remoteSource != nil }
+
     // MARK: iOS servers (history + live)
 
     #if os(iOS)
@@ -224,9 +232,6 @@ final class SyncCoordinator: ObservableObject {
         guard !inFlight else { return }
         Task { await pullAndRestore(endpoint) }
     }
-
-    /// Send a command up to the paired iPhone (Mac → iPhone → band), e.g. `.buzz`.
-    func sendCommand(_ cmd: SyncCommand) { liveClient?.sendCommand(cmd) }
 
     private func pullAndRestore(_ endpoint: NWEndpoint) async {
         guard let peer = SyncPairing.load() else { return }

@@ -16,6 +16,9 @@ extension LiveState {
             charging: charging,
             worn: worn,
             rr: Array(rr.suffix(8)),
+            rrRecent: Array(rrRecent.suffix(18)),
+            lastFrameType: lastFrameType,
+            lastEvent: lastEvent,
             ts: Date().timeIntervalSince1970
         )
     }
@@ -30,6 +33,9 @@ extension LiveState {
         charging = s.charging
         worn = s.worn
         rr = s.rr
+        setRelayedRRRecent(s.rrRecent)
+        lastFrameType = s.lastFrameType
+        lastEvent = s.lastEvent
         remoteSource = source
     }
 
@@ -41,6 +47,9 @@ extension LiveState {
         heartRate = nil
         batteryPct = nil
         charging = nil
+        setRelayedRRRecent([])
+        lastFrameType = nil
+        lastEvent = nil
         remoteSource = nil
     }
 }
