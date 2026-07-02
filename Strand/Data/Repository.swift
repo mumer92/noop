@@ -334,6 +334,36 @@ final class Repository: ObservableObject {
         }
         return days.last(where: { $0.day == logicalKey })
     }
+
+    /// #911: the SINGLE anchor every off-dashboard surface (Home/Lock widget, the watch snapshot AND the
+    /// iOS Live Activity) resolves the row it describes through, so a fourth surface can never drift its
+    /// own way again. Pure + injectable so the boundary is testable without a live clock.
+    ///
+    /// It is exactly what Today does: resolve today's row (`resolveToday`, which carries the #304 pre-04:00
+    /// local-day carve-out and the #144 anti-blank guard), then use that row when it's scored, else carry
+    /// over the freshest STRICTLY-PRIOR scored day for the recovery-derived fields. Anchoring on today's
+    /// row (not "the newest row with any recovery score") is what fixes the rollover drift: the new logical
+    /// day exists but isn't scored yet, and the old `days.last(where: recovery != nil)` still pointed at
+    /// yesterday's scored row, so the widget/wrist/Live Activity showed the older day while Today had moved
+    /// on. The `$0.day < carriedKey` bound (`carriedKey` = today's own key) mirrors
+    /// `TodayView.lastScoredRecoveryDay` + its #547 future-day guard, so a stale or stray future-dated
+    /// scored row can never re-surface AS today.
+    nonisolated static func widgetAnchor(days: [DailyMetric], logicalKey: String, localKey: String) -> DailyMetric? {
+        let todayRow = resolveToday(days: days, logicalKey: logicalKey, localKey: localKey)
+        if todayRow?.recovery != nil { return todayRow }
+        let carriedKey = todayRow?.day ?? logicalKey
+        return days.last(where: { $0.recovery != nil && $0.day < carriedKey })
+    }
+
+    /// Live-clock convenience over the pure `widgetAnchor`: resolves the anchor for `now` (defaults to the
+    /// current instant) so every surface's call site reads as one line and can never partially re-derive
+    /// the keys and drift. Inherits `Repository`'s MainActor isolation (like the `today` computed var)
+    /// because it reads the MainActor-isolated `logicalDayKey` / `localDayKey`; every caller (the widget
+    /// publish, the watch snapshot build, the Live Activity onReceive closures) already runs on the
+    /// MainActor. Tests call the pure 3-arg overload above instead.
+    static func widgetAnchor(days: [DailyMetric], now: Date = Date()) -> DailyMetric? {
+        widgetAnchor(days: days, logicalKey: logicalDayKey(now), localKey: localDayKey(now))
+    }
     /// The trailing 7 CALENDAR days ending today (for the week strip), oldest→newest , not the last 7
     /// stored rows, which on a stale import were old data. ISO yyyy-MM-dd compares chronologically.
     var week: [DailyMetric] {
@@ -392,29 +422,45 @@ final class Repository: ObservableObject {
         calendar.startOfDay(for: logicalDay(now, rolloverHour: rolloverHour))
     }
 
+    /// In-flight open, so concurrent first-callers share ONE open instead of each opening their own.
+    private var storeOpenTask: Task<WhoopStore?, Never>?
+
     private func ensureStore() async -> WhoopStore? {
         if let store { return store }
-        // Don't swallow the open failure with `try?` (#222): an import-time open failure (e.g. the iOS
-        // data-protected store while the device is locked) was previously invisible, surfacing only as a
-        // generic "Couldn't open the local store." Log the real error so the cause is diagnosable.
-        let path: String
-        do {
-            path = try StorePaths.defaultDatabasePath()
-        } catch {
-            NSLog("WhoopStore: ensureStore FAILED resolving DB path , \(error)")
-            return nil
+        // SINGLE-FLIGHT (measured 2026-07-01 on a 5M-row DB): several screens ask for the store at once
+        // on launch (RootView refresh, AppModel init, exploreSeries). ensureStore is async and `store`
+        // is not set until after the `await WhoopStore(path:)` below, so without this guard every caller
+        // races past the `if let store` check while the others are awaiting the open, and they ALL open a
+        // fresh connection and re-run quarantineIncompatibleDatabase (a thundering herd of DB opens on a
+        // large library at the worst moment). Cache the in-flight open Task so concurrent callers join it.
+        if let storeOpenTask { return await storeOpenTask.value }
+        let task = Task { [deviceId] () -> WhoopStore? in
+            // Don't swallow the open failure with `try?` (#222): an import-time open failure (e.g. the iOS
+            // data-protected store while the device is locked) was previously invisible, surfacing only as
+            // a generic "Couldn't open the local store." Log the real error so the cause is diagnosable.
+            let path: String
+            do {
+                path = try StorePaths.defaultDatabasePath()
+            } catch {
+                NSLog("WhoopStore: ensureStore FAILED resolving DB path: \(error)")
+                return nil
+            }
+            let s: WhoopStore
+            do {
+                s = try await WhoopStore(path: path)
+            } catch {
+                let ns = error as NSError
+                NSLog("WhoopStore: ensureStore FAILED opening store: \(ns.domain) code=\(ns.code): \(ns.localizedDescription)")
+                return nil
+            }
+            try? await s.upsertDevice(id: deviceId, mac: nil, name: "WHOOP")
+            return s
         }
-        let s: WhoopStore
-        do {
-            s = try await WhoopStore(path: path)
-        } catch {
-            let ns = error as NSError
-            NSLog("WhoopStore: ensureStore FAILED opening store , \(ns.domain) code=\(ns.code): \(ns.localizedDescription)")
-            return nil
-        }
-        try? await s.upsertDevice(id: deviceId, mac: nil, name: "WHOOP")
-        store = s
-        return s
+        storeOpenTask = task
+        let opened = await task.value
+        if let opened { store = opened }
+        storeOpenTask = nil
+        return opened
     }
 
     /// Expose the shared store handle (used by the importer to persist mapped rows).
@@ -527,6 +573,44 @@ final class Repository: ObservableObject {
     /// #833: the computed dictionaries + activity costs InsightsView.load() last built, so a same-seq re-mount
     /// RESTORES them in-memory (no store queries) instead of re-running the heavy load. Not @Published.
     var insightsCache: InsightsLoadCache?
+
+    /// #833/v7.7.2 (Apple Health per-source freeze): macOS cold-mounts the NavigationSplitView detail on every
+    /// sidebar switch (RootView keys it with `.id`), tearing down AppleHealthView's `@State` so its `load()`
+    /// re-read the whole apple-health history off the @MainActor every visit. The exact twin of the Insights
+    /// trio above: these live HERE on the long-lived Repository so they SURVIVE the re-mount. `-1` / "" = never
+    /// loaded this launch, so the first load always runs. Not @Published (pure load-bookkeeping, never drives
+    /// the UI).
+    var appleHealthLoadedSeq = -1
+    /// #833/v7.7.2: the dayKey Apple Health last loaded for, paired with `appleHealthLoadedSeq`; a day rollover
+    /// re-loads even at an unchanged seq. Not @Published.
+    var appleHealthLoadedDayKey = ""
+    /// #833/v7.7.2: the snapshot AppleHealthView.load() last built, so a same-seq re-mount RESTORES it
+    /// in-memory (no store queries) instead of re-running the heavy load. Not @Published.
+    var appleHealthCache: AppleHealthLoadCache?
+
+    /// #849/#932 (Today day-scoped freeze): macOS cold-mounts the NavigationSplitView detail on every sidebar
+    /// switch, so `TodayView.loadDayScoped()` re-ran its full-day heavy read (the selected day's 5-minute
+    /// `hrBuckets` plus, on today, the raw per-sample `hrSamples` pass for the live Effort; 170k+ HR rows/day
+    /// on a big library) on every visit even when nothing changed. The exact twin of the trios above: this is
+    /// the `refreshSeq` value at which Today last ran its DAY-SCOPED load. Lives HERE on the long-lived
+    /// Repository so it SURVIVES the re-mount. `-1` = never loaded this launch, so the first load always runs.
+    /// Not @Published (pure load-bookkeeping, never drives the UI).
+    var todayDayScopedLoadedSeq = -1
+    /// #932: the day key the day-scoped set last loaded FOR (the VIEWED day, `TodayView.selectedDayKey`), so
+    /// day navigation can never serve another day's snapshot: swiping to a different day misses (its key
+    /// differs) and genuinely re-loads, and a day rollover re-loads even at an unchanged seq. Not @Published.
+    var todayDayScopedLoadedDayKey = ""
+    /// #932: the snapshot `loadDayScoped()` last built, so a same-(seq, day) re-mount RESTORES it in-memory
+    /// (no store queries, no hrBuckets/hrSamples reads) instead of re-running the heavy load. Not @Published.
+    var todayDayScopedCache: TodayDayScopedCache?
+
+    #if DEBUG
+    /// v7.7.2 regression guard: DEBUG-only tally of how many times each cached heavy load actually ran its
+    /// store reads (keyed "appleHealth" / "xiaomi" / "todayDayScoped"). A same-state re-mount that restores
+    /// from cache must NOT increment this, so a test can assert the cold-mount short-circuit holds.
+    /// DEBUG-only, never shipped.
+    var loadFireCounts: [String: Int] = [:]
+    #endif
 
     func refresh(days nDays: Int = 4000) async {
         guard let store = await ensureStore() else { return }
@@ -743,6 +827,39 @@ final class Repository: ObservableObject {
             }
         }
         return byStart.values.sorted { $0.ts < $1.ts }
+    }
+
+    /// The latest (greatest-ts) non-nil @63 activity class over `[from, to]`, read across the active strap +
+    /// canonical UNION (`importedReadIds`), for the Steps tile icon (#316 / @63). A re-added strap banks its
+    /// LIVE step samples (which carry `activityClass`) under its OWN fresh id via the Collector, exactly like
+    /// HR, so a read pinned to the canonical "my-whoop" would return nothing and the tile icon would vanish for
+    /// a re-added strap (the #904/#908 family). Reading the union keeps the icon whichever id the samples
+    /// landed under; a single-device install reads one id (byte-identical). Ties on ts favour the active strap
+    /// (its list is scanned first by `latestActivityClass`).
+    func stepActivityClassLatest(from: Int, to: Int) async -> Int? {
+        guard let store = await ensureStore() else { return nil }
+        var perId: [[StepSample]] = []
+        for id in importedReadIds {   // active strap FIRST so it wins a ts tie
+            perId.append((try? await store.stepSamples(deviceId: id, from: from, to: to, limit: 200_000)) ?? [])
+        }
+        return Self.latestActivityClass(perId)
+    }
+
+    /// Pure pick of the latest classed activity across the union's per-id step lists: the non-nil
+    /// `activityClass` on the sample with the greatest ts, resolving a ts tie in favour of the FIRST list (the
+    /// active strap, mirroring the union's active-wins rule). Static + pure so it's unit-testable without a
+    /// store. A single non-empty list reduces to "last non-nil class in that list".
+    nonisolated static func latestActivityClass(_ perId: [[StepSample]]) -> Int? {
+        var bestTs = Int.min
+        var bestClass: Int? = nil
+        for list in perId {
+            for s in list where s.activityClass != nil {
+                // Strict `>` keeps the FIRST list's sample on an exact ts tie: earlier lists are scanned
+                // first, so a later list's equal-ts sample never overwrites the active strap's.
+                if s.ts > bestTs { bestTs = s.ts; bestClass = s.activityClass }
+            }
+        }
+        return bestClass
     }
 
     func sleepSessions(from: Int, to: Int, limit: Int = 100) async -> [CachedSleepSession] {
@@ -1024,11 +1141,17 @@ final class Repository: ObservableObject {
     /// When `source` is the canonical WHOOP id, UNION the active strap so a series stored under a re-added
     /// strap's id ("whoop-<uuid>") still surfaces alongside the canonical history (deduped per day, active
     /// strap wins). Other sources (apple-health / xiaomi-band / lab-book) read that source verbatim.
-    func series(key: String, source: String, days: Int = 4000) async -> [(day: String, value: Double)] {
+    ///
+    /// #833/v7.7.2: `fullHistory` is a full-range sentinel. When true the read spans the whole recordable
+    /// epoch ("0000-01-01" ... "9999-12-31", the same literals `dataVolumeSnapshot` uses) REGARDLESS of
+    /// `days`; when false (the default) `days` is honoured exactly as before, so every existing caller (all
+    /// default `fullHistory: false`, keep `days: 4000`) is byte-identical. The per-source pages window their
+    /// genuine reloads with `days` and force full range only for their ALL view via this flag.
+    func series(key: String, source: String, days: Int = 4000, fullHistory: Bool = false) async -> [(day: String, value: Double)] {
         guard let store = await ensureStore() else { return [] }
         let now = Date()
-        let from = Self.dayString(now.addingTimeInterval(-Double(days) * 86_400))
-        let to = Self.dayString(now.addingTimeInterval(86_400))
+        let from = fullHistory ? "0000-01-01" : Self.dayString(now.addingTimeInterval(-Double(days) * 86_400))
+        let to = fullHistory ? "9999-12-31" : Self.dayString(now.addingTimeInterval(86_400))
         let pts: [MetricPoint]
         if source == canonicalDeviceId {
             pts = await unionMetricSeries(store: store, key: key, from: from, to: to)
@@ -1055,15 +1178,15 @@ final class Repository: ObservableObject {
         /// User-facing pill label.
         var title: String {
             switch self {
-            case .hr: return "Heart Rate"
+            case .hr: return String(localized: "Heart Rate")
             // #803: the .hrv series is a TRAILING-WINDOW rMSSD moving across the session (HRVAnalyzer
             // .rollingRmssd), not one opaque "HRV" figure and not raw R-R ms. Label it honestly so the
             // pill names what the chart actually plots.
-            case .hrv: return "Windowed rMSSD"
+            case .hrv: return String(localized: "Windowed rMSSD")
             case .spo2: return "SpO₂"
-            case .skinTemp: return "Skin Temp"
-            case .respiration: return "Respiration"
-            case .motion: return "Motion"
+            case .skinTemp: return String(localized: "Skin Temp")
+            case .respiration: return String(localized: "Respiration")
+            case .motion: return String(localized: "Motion")
             }
         }
     }
@@ -1169,9 +1292,6 @@ final class Repository: ObservableObject {
     /// stored signal). Empty when the strap offloaded nothing for the window.
     private func timelineRawMetric(metric: TimelineMetric, store: WhoopStore, source: String,
                                    from: Int, to: Int) async -> [TrendPoint] {
-        func pt(_ ts: Int, _ v: Double) -> TrendPoint {
-            TrendPoint(date: Date(timeIntervalSince1970: TimeInterval(ts)), value: v)
-        }
         switch metric {
         case .hr:
             return []   // handled by the caller's HR path
@@ -1185,23 +1305,43 @@ final class Repository: ObservableObject {
             // stride keeps a 1 Hz R-R stream from emitting a point per beat.
             let rr = (try? await store.rrIntervals(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
             let window = Self.hrvRollingWindowSec(spanSeconds: to - from)
-            return HRVAnalyzer.rollingRmssd(rr: rr, windowSec: window, stepSec: max(1, window / 8))
-                .map { pt($0.ts, $0.rmssd) }
+            // rollingRmssd + the map over its output run OFF the main actor (mirrors the HR branch's
+            // Task.detached in `timelineSeries`): only the already-read Sendable `rr` rows cross in.
+            return await Task.detached(priority: .utility) {
+                HRVAnalyzer.rollingRmssd(rr: rr, windowSec: window, stepSec: max(1, window / 8))
+                    .map { Self.timelinePoint($0.ts, $0.rmssd) }
+            }.value
         case .spo2:
             // The honest raw red/IR ratio proxy (#166: no calibrated %), shown as a unitless trend.
             let s = (try? await store.spo2Samples(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
-            return s.compactMap { $0.ir > 0 ? pt($0.ts, Double($0.red) / Double($0.ir)) : nil }
+            // The up-to-200k-row conversion runs OFF the main actor; only the Sendable `s` rows cross in.
+            return await Task.detached(priority: .utility) {
+                s.compactMap { $0.ir > 0 ? Self.timelinePoint($0.ts, Double($0.red) / Double($0.ir)) : nil }
+            }.value
         case .skinTemp:
             let s = (try? await store.skinTempSamples(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
-            return s.map { pt($0.ts, Double($0.raw) / 100.0) }   // centidegrees → °C (#156)
+            return await Task.detached(priority: .utility) {
+                s.map { Self.timelinePoint($0.ts, Double($0.raw) / 100.0) }   // centidegrees → °C (#156)
+            }.value
         case .respiration:
             let s = (try? await store.respSamples(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
-            return s.map { pt($0.ts, Double($0.raw)) }
+            return await Task.detached(priority: .utility) {
+                s.map { Self.timelinePoint($0.ts, Double($0.raw)) }
+            }.value
         case .motion:
             // Gravity vector magnitude as a coarse movement signal (1 g at rest).
             let s = (try? await store.gravitySamples(deviceId: source, from: from, to: to, limit: 200_000)) ?? []
-            return s.map { pt($0.ts, ($0.x * $0.x + $0.y * $0.y + $0.z * $0.z).squareRoot()) }
+            // The sqrt-per-row magnitude over up to 200k gravity rows runs OFF the main actor.
+            return await Task.detached(priority: .utility) {
+                s.map { Self.timelinePoint($0.ts, ($0.x * $0.x + $0.y * $0.y + $0.z * $0.z).squareRoot()) }
+            }.value
         }
+    }
+
+    /// Build a `TrendPoint` from a unix-seconds `ts` + value. `nonisolated static` so the per-row
+    /// timeline conversions can run inside `Task.detached` off the main actor (captures no self/actor state).
+    nonisolated static func timelinePoint(_ ts: Int, _ v: Double) -> TrendPoint {
+        TrendPoint(date: Date(timeIntervalSince1970: TimeInterval(ts)), value: v)
     }
 
     /// Mean-bin an already-loaded raw point series onto a `bucketSeconds` grid (floor(ts/bucket)*bucket),
@@ -1265,15 +1405,18 @@ final class Repository: ObservableObject {
     /// on surfaces where the user expects the best available signal (Compare/Insights/Stress/Explore/
     /// Today); use `series(key:source:)` where a single source must be honoured verbatim. Precedence is
     /// explicit per `sourceCandidates`: imported WHOOP > NOOP-computed > declared-compatible Apple Health.
-    func resolvedSeries(key: String, source preferredSource: String, days: Int = 4000) async -> MetricSeriesResolution {
+    /// #833/v7.7.2: `fullHistory` forces the full recordable epoch ("0000-01-01" ... "9999-12-31")
+    /// regardless of `days`; false (the default) honours `days` exactly as before, so existing callers are
+    /// byte-identical.
+    func resolvedSeries(key: String, source preferredSource: String, days: Int = 4000, fullHistory: Bool = false) async -> MetricSeriesResolution {
         let candidates = Self.sourceCandidates(forKey: key, preferredSource: preferredSource,
                                                actualWhoopSource: deviceId)
         guard let store = await ensureStore() else {
             return MetricSeriesResolution(requestedSource: preferredSource, candidates: candidates, points: [])
         }
         let now = Date()
-        let from = Self.dayString(now.addingTimeInterval(-Double(days) * 86_400))
-        let to = Self.dayString(now.addingTimeInterval(86_400))
+        let from = fullHistory ? "0000-01-01" : Self.dayString(now.addingTimeInterval(-Double(days) * 86_400))
+        let to = fullHistory ? "9999-12-31" : Self.dayString(now.addingTimeInterval(86_400))
 
         // First candidate wins per day; later candidates only fill days no earlier one covered.
         var byDay: [String: ResolvedMetricPoint] = [:]
@@ -1396,12 +1539,16 @@ final class Repository: ObservableObject {
     ///     column , the same key→column map InsightsView.dailyOutcome / Android's dailyPick use,
     ///     extended to the full daily column set.
     /// Any OTHER source (apple-health / nutrition-csv / noop-mood) reads only its own series, unchanged.
-    func exploreSeries(key: String, source: String, days: Int = 4000) async -> [(day: String, value: Double)] {
-        guard source == "my-whoop" else { return await series(key: key, source: source, days: days) }
+    /// #833/v7.7.2: `fullHistory` forces the full recordable epoch ("0000-01-01" ... "9999-12-31")
+    /// regardless of `days`; false (the default) honours `days` exactly as before, so existing callers are
+    /// byte-identical. The flag is forwarded to the non-strap `series(...)` delegation below so every source
+    /// path honours it.
+    func exploreSeries(key: String, source: String, days: Int = 4000, fullHistory: Bool = false) async -> [(day: String, value: Double)] {
+        guard source == "my-whoop" else { return await series(key: key, source: source, days: days, fullHistory: fullHistory) }
         guard let store = await ensureStore() else { return [] }
         let now = Date()
-        let from = Self.dayString(now.addingTimeInterval(-Double(days) * 86_400))
-        let to = Self.dayString(now.addingTimeInterval(86_400))
+        let from = fullHistory ? "0000-01-01" : Self.dayString(now.addingTimeInterval(-Double(days) * 86_400))
+        let to = fullHistory ? "9999-12-31" : Self.dayString(now.addingTimeInterval(86_400))
 
         // day → value, lowest-priority source first; higher-priority sources overwrite per day so a
         // real import always wins over the computed strap value.
@@ -1932,6 +2079,61 @@ final class Repository: ObservableObject {
             deviceId: "apple-health",
             from: Self.dayString(now.addingTimeInterval(-Double(days) * 86_400)),
             to: Self.dayString(now.addingTimeInterval(86_400)))) ?? []
+    }
+
+    /// #833/v7.7.2 (Apple Health per-source freeze): the SHARED heavy-load seam behind `AppleHealthView.load()`.
+    /// It owns the cache short-circuit, the DEBUG fire tally, the whole-history store reads, and the write-back,
+    /// so the freeze fix lives in ONE testable place instead of the view's `@State` (which can't be driven
+    /// headlessly). The view calls this then copies the returned snapshot into its `@State`; the regression test
+    /// calls it twice at an unchanged seq and asserts the second call short-circuited.
+    ///
+    /// When `allowCache` is set AND the live state is unchanged (`appleHealthLoadedSeq == refreshSeq` AND the
+    /// same local dayKey) AND a snapshot exists, it RESTORES that snapshot with no store queries and does NOT
+    /// bump the fire tally, that same-state re-mount is exactly the cold-mount the freeze fix must absorb. Any
+    /// other call runs the genuine full read (bumping the tally AFTER the short-circuit), snapshots it onto the
+    /// long-lived repo keyed by the seq + dayKey it loaded for, and returns it. (The whole class is `@MainActor`,
+    /// so this seam is main-actor isolated like every other read facade here.)
+    func performAppleHealthLoad(seriesKeys: [String], allowCache: Bool) async -> AppleHealthLoadCache {
+        // #833/v7.7.2: same-state re-mount → restore the prior snapshot (no store queries), which is the freeze
+        // fix. The dayKey guard mirrors the `.task(id:)` key so a day rollover still re-loads at an unchanged seq.
+        if allowCache,
+           appleHealthLoadedSeq == refreshSeq,
+           appleHealthLoadedDayKey == Repository.localDayKey(Date()),
+           let cached = appleHealthCache {
+            return cached
+        }
+
+        #if DEBUG
+        // v7.7.2 regression guard: count only genuine heavy loads (the cache restore above returned BEFORE this
+        // and must not increment it).
+        loadFireCounts["appleHealth", default: 0] += 1
+        #endif
+
+        async let rows = appleDailyRows()
+        async let workouts = workoutRows()
+
+        // The per-source page's data contract: ALL history is loaded ONCE and the range control windows it
+        // client-side, anchored to the latest data point (not "now"). The client-side widen therefore needs the
+        // WHOLE series in hand, so the fetch forces the full recordable epoch via `fullHistory` rather than a
+        // `days` window that "now"-anchored windowing could truncate below the user's latest-point-relative ALL
+        // view. `days` stays at its 4000 default but is IGNORED while `fullHistory` is true.
+        var fetched: [String: [(day: String, value: Double)]] = [:]
+        for key in seriesKeys {
+            fetched[key] = await series(key: key, source: "apple-health", days: 4000, fullHistory: true)
+        }
+
+        let loadedRows = await rows
+        let appleWorkouts = await workouts.filter { WorkoutSource.isAppleHealth($0.source) }
+
+        let snapshot = AppleHealthLoadCache(appleRows: loadedRows.sorted { $0.day < $1.day },
+                                            workoutCount: appleWorkouts.count,
+                                            series: fetched)
+        // #833/v7.7.2: snapshot what we just read onto the long-lived repo, keyed by the seq + dayKey we loaded
+        // for, so a later same-state re-mount restores it in-memory instead of re-querying.
+        appleHealthCache = snapshot
+        appleHealthLoadedSeq = refreshSeq
+        appleHealthLoadedDayKey = Repository.localDayKey(Date())
+        return snapshot
     }
 
     /// Shared formatter , created once. Hot read path (called per series window / refresh);

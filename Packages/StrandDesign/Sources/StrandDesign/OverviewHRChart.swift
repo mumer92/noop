@@ -403,13 +403,22 @@ public struct OverviewHRChart: View {
         // Zoom/pan: active whenever a zoom binding is supplied (the Deep Timeline and the Today HR chart).
         // Every other call site passes the default `.constant(nil)`, so those static charts keep their exact
         // gestures. The modifier itself reads Reduce Motion, so the double-tap reset snaps when it's on.
+        // #829 follow-up: keyed on `zoomBounds` (the stable "a zoom binding was supplied" discriminator the
+        // init comment names, set once by the two zooming call sites, nil everywhere else), NOT on the live
+        // `zoomDomain`, which is nil until the user first zooms, so keying on it left the gestures unmounted
+        // in exactly the state where the first pinch has to land. `apply` below normalises a window that
+        // covers the full clamp bounds back to nil, so an un-zoomed drag (a pan of the whole day into
+        // itself) never flips the hint/Reset row into its "Zoomed in" state.
         .modifier(ZoomPanModifier(
-            isActive: zoomDomain != nil,
+            isActive: zoomBounds != nil,
             isZoomed: { zoomDomain != nil },
             current: { xDomain },
             bounds: zoomClampBounds,
             anchor: $gestureAnchorDomain,
-            apply: { newDomain in zoomDomain = newDomain },
+            apply: { newDomain in
+                zoomDomain = (newDomain.lowerBound <= zoomClampBounds.lowerBound
+                              && newDomain.upperBound >= zoomClampBounds.upperBound) ? nil : newDomain
+            },
             reset: { zoomDomain = nil },
             zoom: { base, scale, frac, bounds in Self.zoomed(base, scale: scale, anchorFraction: frac, bounds: bounds) },
             pan: { base, dx, plotWidth, bounds in
@@ -432,20 +441,20 @@ public struct OverviewHRChart: View {
     /// chart shows visually, so the collapsed element still conveys the whole picture (cf. the Android
     /// OverviewHRChart semantics).
     private var accessibilitySummary: String {
-        guard !points.isEmpty else { return "No heart-rate data" }
+        guard !points.isEmpty else { return String(localized: "No heart-rate data") }
         let values = points.map(\.value)
         let lo = values.min() ?? valueRange.lowerBound
         let hi = values.max() ?? valueRange.upperBound
-        var parts = ["\(points.count) readings",
-                     "average \(valueFormat(averageValue)) bpm",
-                     "range \(valueFormat(lo)) to \(valueFormat(hi))"]
+        var parts = [String(localized: "\(points.count) readings"),
+                     String(localized: "average \(valueFormat(averageValue)) bpm"),
+                     String(localized: "range \(valueFormat(lo)) to \(valueFormat(hi))")]
         if let sleep {
-            parts.append("asleep \(Self.hoursMinutes(sleep.end.timeIntervalSince(sleep.start)))")
+            parts.append(String(localized: "asleep \(Self.hoursMinutes(sleep.end.timeIntervalSince(sleep.start)))"))
         }
         if let recovery { parts.append(recovery.label) }
         if let effort { parts.append(effort.label) }
         if !workouts.isEmpty {
-            parts.append(workouts.count == 1 ? "1 workout" : "\(workouts.count) workouts")
+            parts.append(workouts.count == 1 ? String(localized: "1 workout") : String(localized: "\(workouts.count) workouts"))
         }
         return parts.joined(separator: ", ")
     }

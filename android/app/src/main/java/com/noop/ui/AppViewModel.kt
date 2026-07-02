@@ -612,15 +612,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // Throttled + no-op without a placed widget; never let a Glance hiccup kill the collector.
                 runCatching {
                     val live = ble.state.value
-                    val todayRow = _today.value
+                    // #911: resolve the widget anchor through the SHARED `widgetAnchorRow`, the SAME
+                    // selector the background-service producer (WhoopConnectionService) uses, so the two
+                    // producers can never drift. It anchors on today's logical-day row (rolls at 04:00,
+                    // #304 carve-out) and, when today isn't scored yet, carries over the freshest
+                    // STRICTLY-PRIOR scored day for the recovery-derived fields so the widget doesn't blank
+                    // right after the rollover and never re-surfaces a stale scored row AS today. Only the
+                    // widget reads the anchor here (the notification's honest-null contract lives in the
+                    // service), keeping the two symmetric.
+                    val anchorRow = widgetAnchorRow(days, logicalKey, localKey)
                     WidgetSnapshotStore.push(
                         appContext,
                         WidgetSnapshot(
-                            recoveryPct = todayRow?.recovery?.roundToInt(),
+                            recoveryPct = anchorRow?.recovery?.roundToInt(),
                             // Rest = the sleep_performance composite from THIS row's banked stage figures
                             // (pure, honest-null until last night is scored); Effort = the 0–100 strain. (#516)
-                            restPct = todayRow?.let { RestScorer.restFromDaily(it)?.roundToInt() },
-                            effortPct = todayRow?.strain?.roundToInt(),
+                            restPct = anchorRow?.let { RestScorer.restFromDaily(it)?.roundToInt() },
+                            effortPct = anchorRow?.strain?.roundToInt(),
                             heartRate = live.heartRate,
                             batteryPct = live.batteryPct?.roundToInt(),
                             connected = live.connected,
@@ -1289,7 +1297,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 add(ScheduledReportPolicy.durationLabel(durMin))
                 row.avgHr?.let { add("avg $it bpm") }
             }
-            "Workout logged — ${WorkoutEditing.displaySport(row.sport)}" to
+            "Workout logged: ${WorkoutEditing.displaySport(row.sport)}" to
                 (pieces.joinToString(" · ") + ". Summarised after your strap synced.")
         }
         ScheduledReportNotifier.onWorkout(appContext, row.startTs, title, body)
@@ -1438,6 +1446,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun setContinuousHrv(enabled: Boolean) {
         NoopPrefs.setContinuousHrv(appContext, enabled)
+        ble.setKeepStreamForData(continuousHrvEffective())
+    }
+
+    /**
+     * Flip "Overnight only" for Continuous HRV capture (#927, driven by Settings → Strap). Persists the
+     * preference and re-pushes the UNCHANGED keep-stream want, purely so the BLE reconciler re-derives
+     * the window gate immediately: flipping it on outside the window disarms the stream now, flipping it
+     * off re-arms it. The BLE client re-reads this preference at every arm site, so no stale value can
+     * keep the stream armed outside the window between reconciles.
+     */
+    fun setContinuousHrvOvernight(enabled: Boolean) {
+        NoopPrefs.setContinuousHrvOvernight(appContext, enabled)
         ble.setKeepStreamForData(continuousHrvEffective())
     }
 
@@ -1812,8 +1832,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ble.armStrapAlarm(epochSec)
     }
 
-    /** Fire a haptic buzz on the strap (requires a bonded connection). */
+    /** Fire a haptic buzz on the strap (requires a bonded connection). Scheduled cues only; for a
+     *  user-facing "buzz the strap now" action use [buzzStrapOnce] instead (#921). */
     fun buzz(loops: Int = 2) = ble.buzz(loops)
+
+    /** One-shot user buzz (#921): the confirmed pattern + RUN_ALARM sequence, written acknowledged
+     *  (RUN_ALARM only where the family gate allows it). Drives the Live-screen Buzz button. */
+    fun buzzStrapOnce() = ble.buzzStrapOnce()
 
     /** Tell the strap to stop an in-progress haptic pattern (#769). Best-effort; no-op when not connected
      *  or on a 5/MG (cmd 122 isn't confirmed on its 0x13 path). Used by the Breathe session teardown. */

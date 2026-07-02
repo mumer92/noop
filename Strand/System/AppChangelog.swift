@@ -7,7 +7,7 @@ enum AppChangelog {
 
     /// Bump this when you add a release below. The "What's New" sheet shows automatically when the
     /// stored last-seen version is behind this. (Decoupled from the bundle version on purpose.)
-    static let currentVersion = "7.7.0"
+    static let currentVersion = "7.8.0"
 
     struct Release: Identifiable {
         let version: String
@@ -19,6 +19,33 @@ enum AppChangelog {
 
     /// Newest first.
     static let releases: [Release] = [
+        Release(
+            version: "7.8.0",
+            title: "The everything update",
+            date: "July 2026",
+            items: [
+                "**Much faster with years of history.** Today and the Apple Health tab load from caches, launch skips a burst of redundant work, live decoding is about twice as fast, the Compare chart stays smooth on multi-year data, and backing up, restoring, exporting or deleting data no longer locks the app up.",
+                "**Pinch to zoom, for real this time.** The Today heart-rate chart's zoom shipped earlier but the gesture could never actually win against the day swipe, so it felt broken. That's fixed properly on iPhone, and Android gets the same pinch and pan. Double-tap resets.",
+                "**Find any screen.** The Mac sidebar has a search field now: type a few letters and every matching section opens.",
+                "**Continuous HRV, overnight only.** A new option runs the live HRV stream just during your quiet hours: the same nightly readings at roughly half the battery cost. Daytime Stress readings get sparser with it on.",
+                "**Charge and Rest stop sticking on an old night.** A strap with a drifting clock could re-bank the same night twice and pin your scores to the stale copy. Duplicates are now caught, cleaned up and re-scored automatically.",
+                "**The Buzz Strap shortcut buzzes again.** One-shot buzzes now use the exact sequence the strap is known to answer, delivered as acknowledged writes so a busy connection can't silently drop them.",
+                "**Widgets keep up.** The iPhone widget refreshes during long sessions instead of freezing at the last app open, and the Apple Watch gets fresher snapshots within its update budget.",
+                "**NOOP en español, and in Chinese.** On iPhone and Mac, Spanish and Chinese (Simplified and Traditional) are complete, and Italian is refreshed. Community-contributed, with thanks. Android translations are on the roadmap.",
+                "**And a pile more.** Bowling in the sports list, workout cards keep even heights, the ring labels center properly, clearer guidance when a signing profile lacks the Health permission, and a guard against straps whose clock claims to be in the future.",
+            ]),
+        Release(
+            version: "7.7.1",
+            title: "Bug fixes: Effort, the widget's day, and Oura reconnect",
+            date: "July 2026",
+            items: [
+                "**Effort stops reading zero after you swap straps.** If you re-added your band through the device manager, the Today heart-rate curve and your Effort could come back empty. They now read whichever strap you actually have paired, so your day fills in again.",
+                "**The widget shows today, not yesterday.** Around midnight the home-screen widget, watch face, Live Activity and lock-screen notification could hang on the previous day. They all move to the new day on their own now.",
+                "**Your Oura ring reconnects by itself.** After a dropout or an app restart the ring comes back on its own, the same as a WHOOP strap, and it no longer keeps retrying a pairing it cannot finish and draining the battery.",
+                "**A battery estimate that learns faster.** Days remaining now personalises from your own discharge without waiting for a full charge first, which helps on a WHOOP 5.0 that rarely tops up to 100 percent.",
+                "**Restore finds backups you named yourself.** The restore list now includes backup files that have just a date in the filename.",
+                "**A few smaller fixes.** The Add-a-device list scrolls at large text sizes, the Today tiles line up at an even height, and Bluetooth on Android is a little steadier.",
+            ]),
         Release(
             version: "7.7.0",
             title: "Smoother, an Oura live-HR fix, and a big pile of improvements",
@@ -2067,19 +2094,19 @@ enum AppChangelog {
     static let expectations: [Expectation] = [
         Expectation(
             icon: "flask",
-            title: "Independent, and experimental",
-            body: "NOOP is a personal, open project — not the WHOOP app, and not affiliated with WHOOP. It reads a strap you own, on your own device. Treat it as a capable work-in-progress rather than a finished product."),
+            title: String(localized: "Independent, and experimental"),
+            body: String(localized: "NOOP is a personal, open project: not the WHOOP app, and not affiliated with WHOOP. It reads a strap you own, on your own device. Treat it as a capable work-in-progress rather than a finished product.")),
         Expectation(
             icon: "checkmark.seal",
-            title: "WHOOP 4.0 is the supported path",
-            body: "WHOOP 4.0 is tested and works end to end. WHOOP 5.0/MG is newer: live heart rate works today, but deeper metrics (recovery, strain, sleep) for 5/MG are still being figured out. NOOP always tells you what's live versus still building."),
+            title: String(localized: "WHOOP 4.0 is the supported path"),
+            body: String(localized: "WHOOP 4.0 is tested and works end to end. WHOOP 5.0/MG is newer: live heart rate works today, but deeper metrics (recovery, strain, sleep) for 5/MG are still being figured out. NOOP always tells you what's live versus still building.")),
         Expectation(
             icon: "hourglass",
-            title: "Your scores build over a few nights",
-            body: "Live heart rate is instant. Recovery, strain and sleep sharpen as NOOP learns your baseline over your first nights of wear. Want your history now? Import your WHOOP export in Data Sources and it backfills in about a minute."),
+            title: String(localized: "Your scores build over a few nights"),
+            body: String(localized: "Live heart rate is instant. Recovery, strain and sleep sharpen as NOOP learns your baseline over your first nights of wear. Want your history now? Import your WHOOP export in Data Sources and it backfills in about a minute.")),
         Expectation(
             icon: "lock.shield",
-            title: "Everything stays on your device",
-            body: "No account, no cloud, no sync. NOOP talks only to your strap and keeps everything local. Your data is yours alone."),
+            title: String(localized: "Everything stays on your device"),
+            body: String(localized: "No account, no cloud, no sync. NOOP talks only to your strap and keeps everything local. Your data is yours alone.")),
     ]
 }

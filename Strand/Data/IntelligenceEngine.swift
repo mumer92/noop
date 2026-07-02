@@ -34,6 +34,10 @@ final class IntelligenceEngine: ObservableObject {
     /// `defer` re-invokes `analyzeRecent(force: true)` ONCE when it clears. A single re-arm (the flag is
     /// cleared BEFORE the re-invoke) bounds it to one extra pass , no recompute storm.
     private var pendingForcedRescore = false
+    /// #899 heal bound: true while the last heal already re-armed a rescore, so a heal firing again on
+    /// the very next pass cannot re-arm a second time (the Android twin is hard-bounded to exactly one
+    /// re-pass; this mirrors it). Reset by any pass whose heal finds nothing, restoring the budget.
+    private var healRearmedThisCycle = false
 
     /// Who supplies the dashboard headline for a By-Day row. The By-Day card always shows NOOP's OWN
     /// on-device numbers, but the WHOLE-DASHBOARD value for the same day can come from an IMPORTED row
@@ -52,7 +56,7 @@ final class IntelligenceEngine: ObservableObject {
         /// (SleepView "On-device"/"Whoop", Today "Apple Health"). NO em-dashes.
         var badge: String {
             switch self {
-            case .computed:    return "On-device"
+            case .computed:    return String(localized: "On-device")
             case .whoopImport: return "Whoop"
             case .appleHealth: return "Apple Health"
             }
@@ -281,7 +285,7 @@ final class IntelligenceEngine: ObservableObject {
         // post-backfill rescore after a sync) , dropping it would leave a freshly-synced night unscored
         // until the next cycle. Re-arm instead: flag it so the running pass's `defer` re-invokes once.
         guard !computing else { if force { pendingForcedRescore = true }; return }
-        guard let store = await repo.storeHandle() else { note = "No on-device store yet."; return }
+        guard let store = await repo.storeHandle() else { note = String(localized: "No on-device store yet."); return }
         guard let hrvCfg = Baselines.metricCfg["hrv"],
               let rhrCfg = Baselines.metricCfg["resting_hr"],
               let respCfg = Baselines.metricCfg["resp"],
@@ -314,7 +318,10 @@ final class IntelligenceEngine: ObservableObject {
             computing = false
             if pendingForcedRescore {
                 pendingForcedRescore = false
-                Task { await self.analyzeRecent(force: true) }
+                // Carry THIS pass's window into the re-pass: a heal firing during a wide one-shot pass
+                // must re-score the same width, not the default 21 days (Kotlin re-passes with the same
+                // maxDays; keep the platforms in lockstep).
+                Task { await self.analyzeRecent(maxDays: maxDays, force: true) }
             }
         }
 
@@ -1070,6 +1077,40 @@ final class IntelligenceEngine: ObservableObject {
         for (start, motion) in motionByStart {
             _ = try? await store.persistSessionMotion(deviceId: computedId, sessionStart: start, motionEpochs: motion)
         }
+        // ── Overlap-aware banked-sleep heal (#899) ────────────────────────────────────────────────────
+        // An unstable strap clock re-banks the SAME night under a shifted timebase, so successive passes
+        // detect it at shifted bounds and the upsert above lands a SECOND row beside the stale one (the
+        // (deviceId, startTs) key differs, and sleep has no delete-reinsert reconcile like dailyMetric /
+        // workout). Collapse the window's stored sessions with the overlap rule, treating the rows THIS
+        // pass just banked as the bank-recency witness (the strap's current timebase), and delete the
+        // stale copies. Scoped to sessions whose wake day lies inside the [oldestDay, newestDay] daily
+        // reconcile window: exactly the days this pass re-scored/evicted, so a session row is never
+        // deleted out from under a daily row the pass did not refresh. Edited rows are never dropped.
+        let storedSessions = (try? await store.sleepSessions(deviceId: computedId, from: windowStart,
+                                                             to: now, limit: 4000)) ?? []
+        let healable = storedSessions.filter {
+            (oldestDay...newestDay).contains(AnalyticsEngine.dayString($0.endTs, offsetSec: tzOffset))
+        }
+        let healDropped = SleepSessionDedup.dedupe(healable, freshStarts: keptStarts).dropped
+        for stale in healDropped {
+            _ = try? await store.deleteSleepSession(deviceId: computedId, startTs: stale.startTs)
+        }
+        if !healDropped.isEmpty {
+            diagnosticSink?("Dedup(#899): removed \(healDropped.count) overlapping duplicate sleep "
+                + "session(s) re-banked under a shifted strap timebase; re-scoring the affected days.", nil)
+            // Re-score against the cleaned store via the existing #899-A re-arm: the days scored THIS
+            // pass consumed the read-side deduped view, but that view had no bank-recency witness (the
+            // fresh detections weren't banked yet), so its survivor can differ from the heal's. One
+            // forced re-pass reconciles them. HARD-BOUNDED: if the re-pass's own heal drops rows
+            // again (detection oscillating under its own feedback), it does NOT re-arm a second time,
+            // matching the Android one-re-pass bound; the budget restores once a pass heals nothing.
+            if !healRearmedThisCycle {
+                healRearmedThisCycle = true
+                pendingForcedRescore = true
+            }
+        } else {
+            healRearmedThisCycle = false
+        }
         // Make re-detection idempotent across runs: clear the prior computed detected workouts in the
         // scored window (a bout's startTs can drift as more HR arrives, which would otherwise orphan
         // stale rows under the (deviceId,startTs,sport) key), then re-insert.
@@ -1087,8 +1128,10 @@ final class IntelligenceEngine: ObservableObject {
             ? "No scored nights yet. Wear the strap with NOOP connected overnight and the engine will score your charge, effort and rest itself, no WHOOP cloud required."
             : nil
 
-        // Reload the dashboard caches so the freshly computed scores show up immediately.
-        if !dailies.isEmpty { await repo.refresh() }
+        // Reload the dashboard caches so the freshly computed scores show up immediately. A heal-only
+        // pass (#899 dedup deleted stale session rows but no daily changed) must refresh too, so the
+        // Sleep tab stops showing the removed duplicates right away.
+        if !dailies.isEmpty || !healDropped.isEmpty { await repo.refresh() }
 
         // #836: record the raw-HR fingerprint this run scored against, so a later NON-forced tick can
         // short-circuit while it's unchanged. Written ONLY here at the end of a completed run (never on an
@@ -1360,8 +1403,13 @@ final class IntelligenceEngine: ObservableObject {
     nonisolated static func bandSleepStateSamples(computedId: String, from: Int, to: Int,
                                                   store: WhoopStore) async -> [(ts: Int, state: Int)] {
         let epochS = 30
-        let sessions = (try? await store.sleepSessions(deviceId: computedId, from: from, to: to,
-                                                       limit: 4000)) ?? []
+        // #899: collapse overlapping timebase-shifted duplicates BEFORE consuming band state. A stale
+        // re-banked copy of the night would otherwise feed "asleep" epochs at the OLD times into the H7
+        // re-onset guard, letting the stale block keep confirming itself. Read-side only (no bank-recency
+        // witness here); the store itself is healed post-upsert in analyzeRecent.
+        let sessions = SleepSessionDedup.dedupe(
+            (try? await store.sleepSessions(deviceId: computedId, from: from, to: to,
+                                            limit: 4000)) ?? []).kept
         var samples: [(ts: Int, state: Int)] = []
         for s in sessions {
             guard let states = try? await store.sessionSleepState(deviceId: computedId,
@@ -1382,7 +1430,14 @@ final class IntelligenceEngine: ObservableObject {
                                                        to: windowEnd, limit: 4000)) ?? []
         let computed = (try? await store.sleepSessions(deviceId: computedId, from: windowStart,
                                                        to: windowEnd, limit: 4000)) ?? []
-        let blocks = (imported + computed).compactMap { s -> SleepStageTotals.HistoryBlock? in
+        // #899: collapse overlapping timebase-shifted duplicates BEFORE the learner sees the history.
+        // A stale re-banked copy of a night lands on a DIFFERENT day key, so the per-day longest-block
+        // de-dup below never caught it and the learned midsleep drifted toward the stale timing, which
+        // then steered the main-night pick (day assignment) to the stale block. The same collapse also
+        // covers an imported night and its computed twin (the longest capture wins, exactly what the
+        // per-day length rule chose anyway).
+        let merged = SleepSessionDedup.dedupe(imported + computed).kept
+        let blocks = merged.compactMap { s -> SleepStageTotals.HistoryBlock? in
             let start = s.effectiveStartTs, end = s.endTs
             guard end > start else { return nil }
             let mid = start + (end - start) / 2

@@ -17,6 +17,29 @@ approximate; downloads are on the [Releases](https://github.com/NoopApp/noop/rel
 
 ---
 
+## 7.8.0: the everything update (all platforms)
+
+The biggest single release since 7.0. Performance for large libraries (cached Today and Apple
+Health loads, launch without redundant work, roughly 2x faster live decoding, smooth Compare
+charts on multi-year data, and backup/restore/export/delete off the UI thread), chart pinch-zoom
+and pan that actually win against the day swipe on iPhone with Android at parity, a search field
+for the Mac sidebar, an opt-in overnight-only mode for Continuous HRV at about half the battery
+cost, the fix for Charge and Rest pinning to an old night (duplicate sleep from a drifting strap
+clock is now detected, healed and re-scored), the silent Buzz Strap shortcut fixed with
+acknowledged writes, mid-session widget refresh with a budget-aware watch gate, Bowling in the
+sports list, and, on iPhone and Mac, complete Spanish and Chinese (Simplified and Traditional) with a
+refreshed Italian. Community contributions reimplemented with credit: quanturtle, ryanbr, dpguglielmi,
+subscriptiondestroyer. Thank you.
+
+## 7.7.1: bug fixes (Effort, the widget's day, and Oura reconnect) (all platforms)
+
+- **Effort stops reading zero after a strap swap.** If a band was re-added through the device manager, the Today heart-rate curve and Effort could come back empty. They now read whichever strap is actually paired.
+- **The widget shows today, not yesterday.** Around midnight the home-screen widget, watch face, Live Activity and lock-screen notification could hang on the previous day. They all roll to the new day now.
+- **Oura rings reconnect on their own.** After a dropout or an app restart the ring comes back by itself, and it no longer loops a pairing it cannot finish and drains the battery.
+- **A battery estimate that learns faster.** Days remaining now personalises from recent discharge without waiting for a full charge first, which helps on a WHOOP 5.0 that rarely tops up to 100 percent.
+- **Restore finds backups you named yourself.** The restore list now includes backup files with just a date in the name.
+- **Smaller fixes.** The Add-a-device list scrolls at large text sizes, the Today tiles line up evenly, and Android Bluetooth is a little steadier.
+
 ## 7.7.0: smoother (especially on Mac), an Oura live-HR fix, and a big pile of improvements (all platforms)
 
 - **Smoother, especially on Mac.** The long freeze some people hit when opening the app or the Insights tab should be gone, and after a sync Charge and Rest now catch up to the latest night instead of sometimes sticking on an older one.

@@ -84,7 +84,15 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -131,6 +139,7 @@ import java.time.format.FormatStyle
 import java.time.temporal.ChronoUnit
 import java.util.Calendar
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -623,9 +632,12 @@ fun TodayScreen(
         val nextStart = selectedDay.plusDays(1).atStartOfDay(zone).toEpochSecond()
         val now = System.currentTimeMillis() / 1000
         val end = if (selectedDayOffset == 0) now else (nextStart - 1)
+        // #908 family: read the active strap ∪ canonical "my-whoop" union, NOT a hardcoded "my-whoop". A strap
+        // re-added through the device manager banks its live step samples (which carry the @63 class) under its
+        // own fresh id, so a pinned "my-whoop" read dropped the tile icon for a re-added strap. Single-WHOOP ⇒
+        // one id ⇒ byte-identical read. Mirrors the iOS Repository.stepActivityClassLatest union.
         stepActivityClassForDay = runCatching {
-            viewModel.repo.stepSamples("my-whoop", start, end)
-                .lastOrNull { it.activityClass != null }?.activityClass
+            viewModel.repo.stepActivityClassLatestUnion(viewModel.activeStrapId, start, end)
         }.getOrNull()
     }
 
@@ -698,7 +710,12 @@ fun TodayScreen(
             val zone = ZoneId.systemDefault()
             val start = selectedDay.atStartOfDay(zone).toEpochSecond()
             val now = System.currentTimeMillis() / 1000
-            val todayHr = runCatching { viewModel.repo.hrSamples("my-whoop", start, now) }.getOrDefault(emptyList())
+            // #908: read the active strap ∪ canonical "my-whoop" union, NOT a hardcoded "my-whoop". A strap
+            // re-added through the device manager banks its live HR under its own fresh id, so a pinned
+            // "my-whoop" read returned nothing and Effort integrated to 0 off an empty series. Single-WHOOP
+            // install resolves to "my-whoop" ⇒ one id ⇒ byte-identical read.
+            val todayHr = runCatching { viewModel.repo.hrSamplesUnion(viewModel.activeStrapId, start, now) }
+                .getOrDefault(emptyList())
             // effMaxHR resolution matches AnalyticsEngine: manual HR-max override first, else Tanaka from age.
             val effMaxHR = profileStore.hrMaxOverride.takeIf { it > 0 }?.toDouble()
                 ?: if (profileStore.age > 0) StrainScorer.tanakaHRmax(profileStore.age.toDouble()) else null
@@ -1124,7 +1141,7 @@ fun TodayScreen(
                     modifier = Modifier.size(Metrics.iconSmall),
                 )
                 Text(
-                    "No cardio load yet — Effort builds once your heart rate climbs into your effort " +
+                    "No cardio load yet. Effort builds once your heart rate climbs into your effort " +
                         "zone (around 50% of your heart-rate reserve). A calm day honestly reads near zero.",
                     style = NoopType.footnote,
                     color = Palette.textTertiary,
@@ -1578,7 +1595,7 @@ private fun ScoringGuideIntroCard(onOpen: () -> Unit, onDismiss: () -> Unit) {
                 }
             }
             Text(
-                "See how Charge, Effort and Rest are calculated — and how they differ from WHOOP.",
+                "See how Charge, Effort and Rest are calculated, and how they differ from WHOOP.",
                 style = NoopType.subhead,
                 color = Palette.textSecondary,
             )
@@ -1876,7 +1893,7 @@ private fun SupportRow(onSupport: () -> Unit) {
                 indication = null,
                 onClick = onSupport,
             )
-            .semantics { contentDescription = "Support NOOP — donate or get in touch" },
+            .semantics { contentDescription = "Support NOOP: donate or get in touch" },
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -1894,7 +1911,7 @@ private fun SupportRow(onSupport: () -> Unit) {
             ) {
                 Text("Support NOOP", style = NoopType.headline, color = Palette.textPrimary)
                 Text(
-                    "Donate or get in touch — totally optional.",
+                    "Donate or get in touch. Totally optional.",
                     style = NoopType.subhead,
                     color = Palette.textSecondary,
                 )
@@ -2108,6 +2125,21 @@ private fun HeroRingColumn(
             horizontalArrangement = Arrangement.spacedBy(3.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // #937 parity: an invisible LEADING twin of the trailing chevron. The word + chevron used to
+            // centre as ONE block, which sat the word visibly off the ring's axis (worst on short labels
+            // like REST). Balancing the row with a same-sized alpha-0 chevron re-centres the WORD itself
+            // under the ring while the real chevron stays on the trailing side. alpha(0f) keeps its layout
+            // slot, the clickable Row (the tap target) only ever grows, and the Row stays plain
+            // start-to-end content, no offset maths, so RTL mirrors identically (the icon is AutoMirrored
+            // anyway). Null description keeps it out of TalkBack: it is a spacer, not content.
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = Palette.textSecondary.copy(alpha = 0.6f),
+                modifier = Modifier
+                    .size(14.dp)
+                    .alpha(0f),
+            )
             Text(domain.label.uppercase(), style = NoopType.overline, color = Palette.textSecondary)
             Icon(
                 Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -3123,7 +3155,7 @@ private fun RecoveryContributorsSection(day: DailyMetric?, carriedDay: DailyMetr
             )
             Text(
                 "Baselines learned on-device over 14 days. Bars are an approximate read of each " +
-                    "signal against a typical adult range — not medical advice.",
+                    "signal against a typical adult range, not medical advice.",
                 style = NoopType.footnote,
                 color = Palette.textTertiary,
             )
@@ -3916,6 +3948,12 @@ private fun HeartRateTrendCard(
     // thread alongside the buckets; each marker self-hides when its data is absent. (PR #285)
     var sleepToday by remember { mutableStateOf<SleepSession?>(null) }
     var workoutsToday by remember { mutableStateOf<List<WorkoutRow>>(emptyList()) }
+    // #829 Android parity - the Today HR pinch/drag zoom window (unix seconds), null = the full loaded
+    // day. Mirrors iOS TodayView.hrZoomDomain: VIEW-ONLY (it narrows which of the already-loaded buckets
+    // render, never re-queries the DB), keyed on the selected day so stepping days always opens at full
+    // scale, while a same-day live reload keeps the window (fresh buckets only ever extend the loaded
+    // extent, so an existing window stays valid). Reset by double-tap on the chart or the Reset link.
+    var hrZoom by remember(selectedDay) { mutableStateOf<LongRange?>(null) }
     // #605: a WHOOP-4.0 offload banks raw HR samples straight into the hr-sample store WITHOUT touching
     // any DailyMetric row, so a sync that only adds today's HR curve never changes `days`, and keying the
     // reload on `days` alone left this chart frozen on the pre-sync window until something unrelated
@@ -3933,7 +3971,10 @@ private fun HeartRateTrendCard(
         val nextStart = selectedDay.plusDays(1).atStartOfDay(zone).toEpochSecond()
         val now = System.currentTimeMillis() / 1000
         val end = if (selectedDay == today) now else (nextStart - 1)
-        buckets = viewModel.repo.hrBuckets("my-whoop", start, end, 300L)
+        // #908: the Today HR curve reads the active strap ∪ canonical "my-whoop" union, NOT a hardcoded
+        // "my-whoop". A strap re-added via the device manager banks live HR under its own fresh id, so a
+        // pinned read showed the "no heart rate banked yet today" empty state. Single-WHOOP ⇒ one id ⇒ same.
+        buckets = viewModel.repo.hrBucketsUnion(viewModel.activeStrapId, start, end, 300L)
         // The sleep that ended within the chart window (the night before / this morning), anchors
         // the band + the Charge-at-wake marker. A wide lower bound catches an onset before midnight.
         sleepToday = runCatching {
@@ -3987,6 +4028,23 @@ private fun HeartRateTrendCard(
     val max = bpm.max().roundToInt()
     val avg = bpm.average().roundToInt()
 
+    // #829 - the RENDERED subset: the zoom window narrows which of the loaded buckets draw (the gesture
+    // handler only commits windows keeping >= 2 buckets, and the full-buckets fallback covers a same-day
+    // reload reshaping the data underneath an open window, so the curve always stays drawable). Bounds =
+    // the loaded day's bucket extent, the same full view the un-zoomed chart renders.
+    val zoomBounds = buckets.first().bucket..buckets.last().bucket
+    val visBuckets = remember(buckets, hrZoom) {
+        val sub = hrZoom?.let { w -> buckets.filter { it.bucket in w } } ?: buckets
+        if (sub.size >= 2) sub else buckets
+    }
+    val visBpm = remember(visBuckets) { visBuckets.map { it.avgBpm } }
+    // The left y-rail tracks the RENDERED window (LineChart normalises to what it draws, the Deep
+    // Timeline idiom), so a zoomed curve keeps honest max/avg/min beside it; the footer Min/Avg/Max row
+    // below stays the full-day read, mirroring the iOS footer.
+    val visMax = visBpm.max().roundToInt()
+    val visAvg = visBpm.average().roundToInt()
+    val visMin = visBpm.min().roundToInt()
+
     SectionHeader("Heart Rate", overline = selectedLabel)
     NoopCard {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -4018,22 +4076,34 @@ private fun HeartRateTrendCard(
                     modifier = Modifier.height(Metrics.chartHeight),
                     verticalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Text("$max", style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
-                    Text("$avg", style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
-                    Text("$min", style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
+                    Text("$visMax", style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
+                    Text("$visAvg", style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
+                    Text("$visMin", style = NoopType.footnote, color = Palette.textTertiary, maxLines = 1)
                 }
                 // The HR line, with the Overview marker layers (sleep band · Charge · Effort · sport
                 // glyphs) overlaid on top, markers are positioned by mapping each event's wall-clock
                 // time onto the line's index spacing, so they sit on the same curve. (PR #285)
+                // #829 - renders the zoom window's subset, with the pinch/pan/double-tap transform
+                // detector attached (keyed on `buckets` so its captured bounds track a reload).
                 OverviewHRChart(
-                    buckets = buckets,
-                    bpm = bpm,
+                    buckets = visBuckets,
+                    bpm = visBpm,
                     sleep = sleepToday,
                     workouts = workoutsToday,
                     recovery = displayMetric?.recovery,
                     strain = displayMetric?.strain,
                     effortScale = effortScale,
-                    modifier = Modifier.weight(1f).height(Metrics.chartHeight),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(Metrics.chartHeight)
+                        .pointerInput(buckets) {
+                            hrChartTransformGestures(
+                                buckets = buckets,
+                                bounds = zoomBounds,
+                                window = { hrZoom },
+                                onWindow = { hrZoom = it },
+                            )
+                        },
                 )
             }
             // X-axis: start / midpoint / end of the loaded window. Each label is read from the
@@ -4045,15 +4115,18 @@ private fun HeartRateTrendCard(
             Row(modifier = Modifier.fillMaxWidth()) {
                 val zone = ZoneId.systemDefault()
                 val hhmm = DateTimeFormatter.ofPattern("HH:mm", Locale.US)
+                // #829 - the axis reads the RENDERED subset, so a zoomed window's ticks describe the
+                // visible curve; the "Now" end label only applies to the un-zoomed live day (a zoomed
+                // window's right edge is wherever the user panned it, so it gets its real timestamp).
                 val bucketToTime = { idx: Int ->
-                    val b = buckets.getOrNull(idx) ?: buckets.last()
+                    val b = visBuckets.getOrNull(idx) ?: visBuckets.last()
                     Instant.ofEpochSecond(b.bucket).atZone(zone).format(hhmm)
                 }
-                val xLabels = if (buckets.size >= 3) {
+                val xLabels = if (visBuckets.size >= 3) {
                     listOf(
                         bucketToTime(0),
-                        bucketToTime(buckets.size / 2),
-                        if (selectedDay == today) "Now" else bucketToTime(buckets.size - 1),
+                        bucketToTime(visBuckets.size / 2),
+                        if (selectedDay == today && hrZoom == null) "Now" else bucketToTime(visBuckets.size - 1),
                     )
                 } else listOf("Start", "", "Now")
                 xLabels.forEach { lbl ->
@@ -4074,6 +4147,124 @@ private fun HeartRateTrendCard(
                     }
                 }
             }
+            // #829 - the pinch/drag affordance + Reset, mirroring the iOS hrZoomHint row: teaches the
+            // gesture, and once zoomed shows a Reset link that mirrors the chart's own double-tap reset.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (hrZoom == null) "Pinch to zoom · drag to pan" else "Zoomed in · drag to pan",
+                    style = NoopType.footnote,
+                    color = Palette.textTertiary,
+                    modifier = Modifier.weight(1f),
+                )
+                if (hrZoom != null) {
+                    Text(
+                        "Reset",
+                        style = NoopType.footnote,
+                        color = Palette.accent,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .clickable(onClickLabel = "Reset the heart rate zoom") { hrZoom = null }
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+// #829 Android parity - the Today HR chart's transform detector. The Deep Timeline's own
+// detectTransformGestures claims EVERY drag on the chart, fine on its dedicated screen but here it would
+// eat the Today feed's vertical scroll AND the LineChart's scrub-to-inspect. This detector reuses the
+// Deep Timeline's pure window math (zoomedWindow / pannedWindow, Charts.kt) but watches the INITIAL
+// pointer pass and claims only:
+//   (a) any multi-finger gesture (pinch zooms about the centroid), always, and
+//   (b) a single-finger HORIZONTAL-dominant drag while ZOOMED (pan). Un-zoomed, a horizontal drag stays
+//       the LineChart's scrub-to-inspect exactly as before, matching iOS where an un-zoomed pan is a
+//       visual no-op anyway.
+// A vertical-dominant drag is never claimed, so the feed keeps scrolling over the chart. Claimed events
+// are consumed in the Initial pass, which cancels the child scrub AND the page-level day-swipe for that
+// gesture, the same chart-owns-its-frame exclusivity the iOS Today chart gets from masking the day-swipe
+// over the chart frame. A motionless double tap resets to the full day, mirroring the iOS double-tap
+// reset. Windows only commit when they keep >= 2 buckets visible (the curve stays drawable), and a
+// window grown back to the full bounds normalises to null (un-zoomed), so the hint/Reset row recovers by
+// pinching out too.
+private suspend fun PointerInputScope.hrChartTransformGestures(
+    buckets: List<HrBucket>,
+    bounds: LongRange,
+    window: () -> LongRange?,
+    onWindow: (LongRange?) -> Unit,
+) {
+    // Two 5-minute buckets: the tightest window that still draws a line segment.
+    val minSpanSeconds = 600L
+    var lastTapAtMs = 0L
+    var lastTapPos = Offset.Zero
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        var claimed = false   // ours: a pinch, or a horizontal pan while zoomed
+        var ceded = false     // vertical-dominant: the feed's scroll owns it, just watch for the lift
+        var moved = false
+        var totalX = 0f
+        var totalY = 0f
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            if (event.changes.none { it.pressed }) {
+                // Lift-off. A short motionless single tap feeds the double-tap reset, only meaningful
+                // while zoomed (the un-zoomed chart has nothing to reset, mirroring the iOS isZoomed
+                // guard), and never consumed, so the LineChart's single-tap inspect keeps working.
+                val up = event.changes.first()
+                if (!claimed && !ceded && !moved && window() != null) {
+                    val upAtMs = up.uptimeMillis
+                    val isDoubleTap = upAtMs - lastTapAtMs <= viewConfiguration.doubleTapTimeoutMillis &&
+                        (up.position - lastTapPos).getDistance() <= viewConfiguration.touchSlop * 4
+                    if (isDoubleTap) {
+                        onWindow(null)
+                        lastTapAtMs = 0L
+                    } else {
+                        lastTapAtMs = upAtMs
+                        lastTapPos = up.position
+                    }
+                }
+                break
+            }
+            if (ceded) continue
+            if (!claimed) {
+                if (event.changes.count { it.pressed } > 1) {
+                    claimed = true
+                } else {
+                    val pan = event.calculatePan()
+                    totalX += pan.x
+                    totalY += pan.y
+                    if (abs(totalY) > viewConfiguration.touchSlop && abs(totalY) > abs(totalX)) {
+                        ceded = true
+                        moved = true
+                        continue
+                    }
+                    if (abs(totalX) > viewConfiguration.touchSlop) {
+                        moved = true
+                        if (window() != null) claimed = true
+                    }
+                }
+            }
+            if (!claimed) continue
+            val zoomChange = event.calculateZoom()
+            val panChange = event.calculatePan()
+            val width = size.width.toFloat().coerceAtLeast(1f)
+            var w = window() ?: bounds
+            if (zoomChange != 1f) {
+                val frac = (event.calculateCentroid().x / width).coerceIn(0f, 1f)
+                w = zoomedWindow(w, zoomChange, frac, bounds, minSpan = minSpanSeconds)
+            }
+            if (panChange.x != 0f) {
+                val secPerPx = (w.last - w.first).toDouble() / width
+                w = pannedWindow(w, (-panChange.x * secPerPx).toLong(), bounds)
+            }
+            if (buckets.count { it.bucket in w } >= 2) {
+                onWindow(if (w.first <= bounds.first && w.last >= bounds.last) null else w)
+            }
+            event.changes.forEach { if (it.positionChanged()) it.consume() }
         }
     }
 }
@@ -4141,6 +4332,15 @@ private fun OverviewHRChart(
         val fi = fracIndexFor(ts) ?: return null
         return if (n > 1) plotW * fi / (n - 1) else null
     }
+    // Strict variant for POINT markers (charge pill, peak, effort-now rule): null when the time
+    // falls outside the RENDERED buckets, so a zoomed window hides out-of-window marks exactly like
+    // iOS clips them, instead of pinning them to the window edge. The sleep BAND keeps the clamping
+    // xFor: clamping a range to the visible window is the correct behaviour for a span.
+    fun xForStrict(ts: Long): Float? {
+        if (n < 2) return null
+        if (ts < buckets.first().bucket || ts > buckets.last().bucket) return null
+        return xFor(ts)
+    }
     fun yForBpm(v: Double): Float {
         val usableH = (plotH - topPad - bottomPad).coerceAtLeast(1f)
         val norm = ((v - minV) / span).toFloat().coerceIn(0f, 1f)
@@ -4153,7 +4353,7 @@ private fun OverviewHRChart(
     val sleepStartX = sleep?.let { xFor(it.effectiveStartTs) }
     val sleepEndX = sleep?.let { xFor(it.endTs) }
     // Charge marker sits at wake (sleep end), else the window start; hidden while recovery is null.
-    val chargeX = recovery?.let { sleep?.let { s -> xFor(s.endTs) } ?: 0f }
+    val chargeX = recovery?.let { sleep?.let { s -> xForStrict(s.endTs) } }
     // Effort marker pinned to the latest sample (right edge) when a strain exists.
     val effortX = strain?.let { if (n > 1) plotW else null }
 
@@ -4287,7 +4487,7 @@ private fun OverviewHRChart(
             workouts.forEach { w ->
                 val peak = hrPeakIn(buckets, w.startTs, w.endTs)
                 if (peak != null) {
-                    val px = xFor(peak.bucket)
+                    val px = xForStrict(peak.bucket)
                     if (px != null) {
                         val py = yForBpm(peak.avgBpm)
                         WorkoutGlyph(

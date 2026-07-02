@@ -523,7 +523,9 @@ fun LiveScreen(viewModel: AppViewModel, onManageDevices: () -> Unit = {}) {
             }
 
             OutlinedButton(
-                onClick = { viewModel.buzz(2) },
+                // #921: the confirmed one-shot sequence (pattern + RUN_ALARM where the family gate
+                // allows it, acked). A bare pattern write here matched the iOS silent no-buzz path.
+                onClick = { viewModel.buzzStrapOnce() },
                 modifier = Modifier.weight(1f),
                 enabled = live.bonded,
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),

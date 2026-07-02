@@ -189,7 +189,8 @@ final class Whoop5HistoricalTests: XCTestCase {
     func testHeartRateOffsetIsNotTheNaivePlusFour() {
         // Guard the firmware caveat: v18 HR is at offset 22, NOT v24's 21+4=25. If a future change
         // wrongly reuses the 4.0 v24 layout at +4, this fails instead of silently shipping HR=0.
-        let f = parseFrame(bytes(historicalHex), family: .whoop5)
+        // collectFields: the annotated fields array is opt-in diagnostics (D#742).
+        let f = parseFrame(bytes(historicalHex), family: .whoop5, collectFields: true)
         XCTAssertEqual(f.fields.first { $0.name == "heart_rate" }?.off, 22)
         XCTAssertNotEqual(f.fields.first { $0.name == "heart_rate" }?.off, 25)
     }

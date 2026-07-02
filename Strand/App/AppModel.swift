@@ -953,9 +953,6 @@ final class AppModel: ObservableObject {
     /// Ask the strap for a fresh battery reading.
     func getBattery() { ble.refreshBattery() }
 
-    /// Fire a haptic buzz on the strap. patternId=2 is the graduated buzz confirmed on-device;
-    /// `loops` sets the length. Used by the in-app test button and (later) notification alerts.
-    /// Requires a bonded connection , no-op otherwise (the command characteristic is gated on bond).
     /// Execute a command relayed from a paired Mac on the strap (the band is bonded to this iPhone, so
     /// all band actions run here). Same entry points the iPhone's own UI uses.
     func handleSyncCommand(_ cmd: SyncCommand) {
@@ -976,9 +973,21 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Fire a haptic buzz on the strap. patternId=2 is the graduated buzz confirmed on-device;
+    /// `loops` sets the length. Used by scheduled cues (coach zones, moment marks, biofeedback).
+    /// Requires a bonded connection , no-op otherwise (the command characteristic is gated on bond).
+    /// For a user-facing "buzz the strap now" action use `buzzStrapOnce()` instead (#921).
     func buzz(loops: UInt8 = 2) {
         if sync.isRelaying { sync.sendCommand(.buzzPattern(pattern: 2, loops: loops)); return }
         ble.send(.runHapticsPattern, payload: [2, loops, 0, 0, 0])
+    }
+
+    /// One-shot user buzz (#921): the on-device-confirmed pattern (patternId=2, 3 loops) followed by
+    /// RUN_ALARM, both written acknowledged. A bare RUN_HAPTICS_PATTERN write can be silently ignored
+    /// (WHOOP 4.0 via the Siri shortcut) or dropped unacked on a busy link, so the Live "Buzz strap"
+    /// button and the Buzz Strap App Intent both route through this single sequence.
+    func buzzStrapOnce() {
+        ble.buzzStrapOnce()
     }
 
     /// Fire a specific preset haptic pattern (patternId 0–6 on Harvard; loops sets length).
@@ -1025,9 +1034,9 @@ final class AppModel: ObservableObject {
     static func postInactivity(minutes: Int) {
         #if os(iOS)
         let body = minutes > 0
-            ? "You've been seated for about \(minutes) min. Time to move."
-            : "Time to move , you've been seated a while."
-        postWristAlert(identifier: "inactivity-nudge", title: "Move reminder", body: body)
+            ? String(localized: "You've been seated for about \(minutes) min. Time to move.")
+            : String(localized: "Time to move. You've been seated a while.")
+        postWristAlert(identifier: "inactivity-nudge", title: String(localized: "Move reminder"), body: body)
         #endif
     }
 
@@ -1035,8 +1044,8 @@ final class AppModel: ObservableObject {
     /// `onSmartAlarmFired` hook. No-op on macOS and when wrist alerts are off.
     static func postSmartAlarm() {
         #if os(iOS)
-        postWristAlert(identifier: "smart-alarm-wake", title: "Smart alarm",
-                       body: "Good morning , your smart alarm just woke you.")
+        postWristAlert(identifier: "smart-alarm-wake", title: String(localized: "Smart alarm"),
+                       body: String(localized: "Good morning. Your smart alarm just woke you."))
         #endif
     }
 
@@ -1095,8 +1104,8 @@ final class AppModel: ObservableObject {
         center.getNotificationSettings { settings in
             guard settings.authorizationStatus == .authorized else { return }
             let content = UNMutableNotificationContent()
-            content.title = "Smart alarm"
-            content.body = "Backup wake , your smart alarm time is here."
+            content.title = String(localized: "Smart alarm")
+            content.body = String(localized: "Backup wake: your smart alarm time is here.")
             content.sound = .default
             let hour = minutes / 60
             let minute = minutes % 60
@@ -1779,6 +1788,13 @@ final class AppModel: ObservableObject {
                                                                        deviceId: appleDeviceId, trace: importTraceSink())
                 try? await store.checkpointWAL()   // reclaim the WAL a bulk import grew (#590)
                 await repo.refresh()
+                // #833/v7.7.2: an Apple Health import may write ONLY body-composition series (weight/body_fat/
+                // lean_mass/bmi/vo2max), which live in metricSeries OUTSIDE refresh()'s diff over daily/sleep/
+                // vitals, so refresh() may not bump `refreshSeq`. AppleHealthView's re-mount cache keys on
+                // `refreshSeq`, so it would keep serving the pre-import snapshot. Explicitly drop the cache so
+                // the next visit re-reads the freshly imported data. (refresh() alone is insufficient here.)
+                repo.appleHealthCache = nil
+                repo.appleHealthLoadedSeq = -1
                 finishImport(.appleHealth, summary: "Imported \(summary.recordCount) records")
             } catch {
                 finishImport(.appleHealth, summary: "Import failed: \(error)", failed: true)
@@ -1896,6 +1912,12 @@ final class AppModel: ObservableObject {
             switch outcome {
             case .imported(let days, let workouts):
                 await repo.refresh()
+                // #833/v7.7.2: the Shortcuts import writes body-composition series (e.g. weight) into
+                // metricSeries, which sits OUTSIDE refresh()'s diff, so refresh() may leave `refreshSeq`
+                // unchanged and AppleHealthView's re-mount cache would serve stale data. Drop the cache so the
+                // next visit re-reads. (Same reasoning as the file-import path above.)
+                repo.appleHealthCache = nil
+                repo.appleHealthLoadedSeq = -1
                 let w = workouts > 0 ? " · \(workouts) workouts" : ""
                 finishImport(.appleHealth, summary: "Imported \(days) days\(w)")
             case .nothingToImport:
