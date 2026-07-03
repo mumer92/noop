@@ -24,7 +24,11 @@ struct IntelligenceView: View {
         // the app when ALL was tapped (#345); LazyVStack only materialises what's on screen.
         ScreenScaffold(title: "Intelligence",
                        subtitle: "NOOP scores your charge, effort and rest itself: on-device, no cloud.",
-                       lazy: true) {
+                       lazy: true,
+                       // Liquid finish: the same full-bleed day-of-sky backdrop Today + the other liquid
+                       // tabs carry, so Intelligence sits in one atmosphere. Static + non-interactive; the
+                       // frosted cards below sit on the opaque canvas and stay legible.
+                       topBackground: liquidScaffoldSky()) {
             if let f = forecast { forecastCard(f) }
             explainerCard
             if intelligence.computing {
@@ -129,32 +133,38 @@ struct IntelligenceView: View {
                                            plannedSleepHours: plannedHours)
     }
 
-    /// The forecast hero — tomorrow-morning Charge as a clean flat GlowRing on a flat opaque
-    /// surfaceRaised card (the Design Reset look), with the plain-English estimate read-out beneath.
-    /// No scenic backdrop, no bloom gauge — the read-outs sit on an opaque card so they stay crisp,
-    /// the same wash-out fix the Today hero got. The number, ± band and copy are unchanged.
+    /// The forecast hero — tomorrow-morning Charge as the canonical liquid `LiquidVessel` gauge in the
+    /// Charge tint, with the estimate counting up over it (the SAME hero language Sleep + Today use), on a
+    /// frosted Charge-tinted card, with the plain-English estimate read-out beneath. A real forecast number,
+    /// so it earns a liquid gauge. The number, ± band and copy are unchanged.
     private func forecastCard(_ f: RecoveryForecast) -> some View {
         let frac = min(max(f.charge / 100.0, 0), 1)
         return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             SectionHeader("Tomorrow's Charge", overline: "Evening forecast", trailing: String(localized: "Estimate"))
             NoopCard(padding: 20, tint: StrandPalette.chargeColor) {
                 VStack(spacing: 14) {
-                    GlowRing(
-                        fraction: frac,
-                        value: f.charge,
-                        format: { "\(Int($0.rounded()))" },
-                        color: StrandPalette.recoveryColor(f.charge),
-                        diameter: 184,
-                        lineWidth: 18
-                    )
-                    .overlay(alignment: .bottom) {
-                        Text("± \(Int(f.band.rounded())) · \(StrandPalette.recoveryState(f.charge))")
-                            .font(StrandFont.captionNumber)
-                            .foregroundStyle(StrandPalette.textTertiary)
-                            .offset(y: 26)
+                    // The signature liquid gauge: a filling vessel tinted to the forecast Charge, with the
+                    // 0–100 estimate counting up over it and the ± band + state word beneath (Sleep's
+                    // restHero idiom). Live so the fill actually flows on the hero surface.
+                    ZStack {
+                        LiquidVessel(value: frac, tint: StrandPalette.recoveryColor(f.charge), animated: true)
+                            .frame(width: 184, height: 184)
+                        VStack(spacing: 0) {
+                            CountUpText(
+                                value: f.charge,
+                                format: { "\(Int($0.rounded()))" },
+                                font: StrandFont.rounded(52),
+                                color: StrandPalette.textPrimary
+                            )
+                            .shadow(color: .black.opacity(0.5), radius: 6, y: 1)
+                            Text("± \(Int(f.band.rounded())) · \(StrandPalette.recoveryState(f.charge))")
+                                .font(StrandFont.captionNumber)
+                                .foregroundStyle(StrandPalette.textSecondary)
+                        }
+                        .allowsHitTesting(false)   // taps fall through to the vessel → splash
                     }
                     .padding(.top, 4)
-                    .padding(.bottom, 18)
+                    .padding(.bottom, 6)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Tomorrow's Charge estimate \(Int(f.charge.rounded())) plus or minus \(Int(f.band.rounded()))")
                     VStack(alignment: .leading, spacing: 10) {
@@ -188,7 +198,7 @@ struct IntelligenceView: View {
                         .accessibilityHidden(true)
                     Text("How this works").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
                 }
-                Text("Charge weighs your HRV against your personal baseline (~55%), resting heart rate (~20%), rest quality (~15%), respiration (~5%) and skin-temperature deviation (~5%). Effort is a 0–\(UnitFormatter.effortScaleMax(effortScale)) cardiovascular load from time in heart-rate zones. Rest is staged from movement and heart rate. Everything is computed here from the strap's raw data. It works for any day NOOP collected raw streams.")
+                Text("Charge weighs your HRV against your personal baseline (~55%), resting heart rate (~20%), rest quality (~15%), respiration (~5%) and skin-temperature deviation (~5%). Effort is a 0-\(UnitFormatter.effortScaleMax(effortScale)) cardiovascular load from time in heart-rate zones. Rest is staged from movement and heart rate. Everything is computed here from the strap's raw data. It works for any day NOOP collected raw streams.")
                     .font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 // The Charge model made concrete — the five weighted inputs, each its own metric accent.
@@ -202,7 +212,7 @@ struct IntelligenceView: View {
                     HStack {
                         Text("Effort").font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
                         Spacer()
-                        Text("0–\(UnitFormatter.effortScaleMax(effortScale)) scale")
+                        Text("0-\(UnitFormatter.effortScaleMax(effortScale)) scale")
                             .font(StrandFont.captionNumber).foregroundStyle(StrandPalette.effortColor)
                     }
                     .padding(.top, 2)
@@ -221,9 +231,10 @@ struct IntelligenceView: View {
                 Spacer()
                 Text(percent).font(StrandFont.captionNumber).foregroundStyle(color)
             }
-            // The NOOP signature segmented bar — counts up on appear, tinted to the input's accent.
-            // The Charge weights span 0…0.55, so the bar reads each input's share of the model.
-            PipBar(value: fraction, range: 0...0.55, segments: 18, tint: color, height: 8)
+            // The horizontal liquid tube — the same vessel Today's Key Metrics + Sleep's stage bars use —
+            // tinted to the input's accent. The Charge weights span 0…0.55, so the tube reads each input's
+            // share of the model. Static (posed): a still fill line, no live canvas per row.
+            LiquidTube(frac: min(1, max(0, fraction / 0.55)), tint: color, height: 8, animated: false)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(label): \(percent) of Charge")
@@ -233,6 +244,15 @@ struct IntelligenceView: View {
         NoopCard(padding: 18, tint: StrandPalette.chargeColor) {
             VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
                 HStack {
+                    // A small liquid vessel filled to the day's Charge (a real 0–100 metric, so it earns a
+                    // gauge) leads the row — the same leading-gauge idiom Today + Insights use. Static
+                    // (posed) so each day row costs a single cached frame, not a live canvas. Only shown
+                    // once the night has a Charge to fill it; a calibrating night leads with the date alone.
+                    if let r = d.recovery {
+                        LiquidVessel(value: min(1, max(0, r / 100)), tint: StrandPalette.recoveryColor(r), animated: false)
+                            .frame(width: 24, height: 24)
+                            .accessibilityHidden(true)
+                    }
                     Text(d.day).font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
                     Spacer()
                     // A3: the existing per-day Charge confidence as a small dot + tier tag pill
@@ -259,11 +279,13 @@ struct IntelligenceView: View {
                     stat("HRV", d.hrv.map { "\(Int($0.rounded()))" } ?? "—", StrandPalette.metricPurple)
                     stat("RHR", d.rhr.map { "\($0)" } ?? "—", StrandPalette.metricRose)
                 }
-                // Effort load meter (0–100) as the NOOP segmented bar — counts up on appear, tinted
-                // along the strain ramp so it reads as at-a-glance cardio load.
+                // Effort load meter (0–100) as a filling LiquidTube — the horizontal liquid vessel Today's
+                // Key Metrics + Sleep's stage bars use — tinted along the strain ramp so it reads as
+                // at-a-glance cardio load. Static (posed) so each day row costs a cached frame, not a live
+                // canvas; a real metric, so it earns a liquid accent.
                 if let s = d.strain {
-                    PipBar(value: s, range: 0...100, segments: 20,
-                           tint: StrandPalette.strainColor(s), height: 8)
+                    LiquidTube(frac: min(1, max(0, s / 100)), tint: StrandPalette.strainColor(s),
+                               height: 8, animated: false)
                         .accessibilityHidden(true)
                 }
                 // A1: "What shaped it" , one row per engine-supplied Charge driver. Gated on a non-empty

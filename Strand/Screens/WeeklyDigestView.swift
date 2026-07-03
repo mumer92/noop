@@ -28,7 +28,8 @@ enum WeeklyDigestSource {
     /// history. Extracts each tracked metric into a "yyyy-MM-dd"→value map and hands
     /// it to the pure engine.
     static func digest(from days: [DailyMetric],
-                       anchorDay: String) -> WeeklyDigest {
+                       anchorDay: String,
+                       effortDisplayFactor: Double = UnitPrefs.currentEffortDisplayFactor()) -> WeeklyDigest {
         var charge: [String: Double] = [:]
         var effort: [String: Double] = [:]
         var rest: [String: Double] = [:]
@@ -44,7 +45,8 @@ enum WeeklyDigestSource {
         }
         return WeeklyDigestEngine.build(
             byMetric: [.charge: charge, .effort: effort, .rest: rest, .rhr: rhr, .hrv: hrv],
-            anchorDay: anchorDay)
+            anchorDay: anchorDay,
+            effortDisplayFactor: effortDisplayFactor)
     }
 
     /// The 0–100 Rest composite for a persisted day, via AnalyticsEngine's display-path
@@ -189,7 +191,7 @@ struct WeeklyDigestContent: View {
                                     domain: domain(for: metric),
                                     deltaText: deltaText(s),
                                     deltaTone: chipTone(s),
-                                    accessibility: rowAccessibility(s),
+                                    accessibility: rowAccessibility(s, effortScale: effortScale),
                                     effortScale: effortScale)
                 }
             }
@@ -267,7 +269,7 @@ struct WeeklyDigestContent: View {
                 .frame(width: 84, alignment: .leading)
 
             // This-week mean.
-            Text(meanText(s))
+            Text(meanText(s, effortScale: effortScale))
                 .font(StrandFont.bodyNumber)
                 .foregroundStyle(StrandPalette.textPrimary)
                 .frame(minWidth: 56, alignment: .leading)
@@ -278,7 +280,7 @@ struct WeeklyDigestContent: View {
             deltaChip(s)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(rowAccessibility(s))
+        .accessibilityLabel(rowAccessibility(s, effortScale: effortScale))
     }
 
     private func deltaChip(_ s: WeeklyMetricSummary) -> some View {
@@ -320,7 +322,7 @@ struct WeeklyDigestContent: View {
     // MARK: - Formatting
 
     private var weekRangeLabel: String {
-        "\(shortDate(digest.weekStart)) – \(shortDate(digest.weekEnd))"
+        "\(shortDate(digest.weekStart))-\(shortDate(digest.weekEnd))"
     }
 
     /// "Jun 8" from "2026-06-08", via the engine's own pure parse (no Calendar).
@@ -334,8 +336,14 @@ struct WeeklyDigestContent: View {
         return "\(name) \(d)"
     }
 
-    private func meanText(_ s: WeeklyMetricSummary) -> String {
+    private func meanText(_ s: WeeklyMetricSummary, effortScale: EffortScale) -> String {
         guard s.thisWeek.n > 0 else { return "—" }
+        // #463/#268: Effort is STORED 0-100; render it on the user's chosen display scale WITH the
+        // denominator ("4.6 / 21", "21.6 / 100") so VoiceOver never speaks a different number than the
+        // visible gauge. Mirrors Android meanText(s, effortScale) byte-for-byte.
+        if s.metric == .effort {
+            return "\(UnitFormatter.effortDisplay(s.thisWeek.mean, scale: effortScale)) / \(UnitFormatter.effortScaleMax(effortScale))"
+        }
         let v = Int(s.thisWeek.mean.rounded())
         return s.metric.unit.isEmpty ? "\(v)" : "\(v) \(s.metric.unit)"
     }
@@ -352,8 +360,12 @@ struct WeeklyDigestContent: View {
     }
 
     /// Tone: good moves green, bad moves rose, flat/uncomparable grey — folding in
-    /// each metric's `higherIsBetter` so a Resting-HR rise reads as a warning.
+    /// each metric's `higherIsBetter` so a Resting-HR rise reads as a warning. A ROUGH comparison
+    /// (either side thin, engine's `isRoughComparison`, the #463 fix) keeps its arrow + % but stays
+    /// grey regardless of direction, so the chip can't frame a verdict off 1-2 days. Mirrors the
+    /// Android WeeklyDigestCard.chipTone gate byte-for-byte.
     private func chipTone(_ s: WeeklyMetricSummary) -> Color {
+        if WeeklyDigestChipStyle.neutralizesTone(s) { return StrandPalette.textTertiary }
         switch s.wowGoodness {
         case 1:  return StrandPalette.statusPositive
         case -1: return StrandPalette.statusCritical
@@ -361,8 +373,8 @@ struct WeeklyDigestContent: View {
         }
     }
 
-    private func rowAccessibility(_ s: WeeklyMetricSummary) -> String {
-        let mean = meanText(s)
+    private func rowAccessibility(_ s: WeeklyMetricSummary, effortScale: EffortScale) -> String {
+        let mean = meanText(s, effortScale: effortScale)
         guard s.weekOverWeek.current.n > 0, s.weekOverWeek.previous.n > 0 else {
             return String(localized: "\(s.metric.label): \(mean) this week, no comparison.")
         }
@@ -377,6 +389,8 @@ struct WeeklyDigestContent: View {
         } else {
             base = String(localized: "\(s.metric.label): \(mean) this week, unchanged \(delta) week over week")
         }
+        // A rough comparison drops the verdict framing too, so VoiceOver matches the neutral chip.
+        if WeeklyDigestChipStyle.dropsVerdictFrame(s) { return String(localized: "\(base).") }
         switch s.wowGoodness {
         case 1:  return String(localized: "\(base), a good sign.")
         case -1: return String(localized: "\(base), worth a look.")
@@ -385,6 +399,21 @@ struct WeeklyDigestContent: View {
     }
 
     private func fmt1(_ x: Double) -> String { String(format: "%.1f", x) }
+}
+
+// MARK: - Rough-comparison chip contract (#463, testable mirror of Android)
+
+/// The display-side gate for a ROUGH week-over-week comparison (either side thin, engine's
+/// `WeeklyMetricSummary.isRoughComparison`). Pulled out of the View's private helpers so it can be
+/// pinned by a test without exposing the whole View: `chipTone`/`rowAccessibility` above delegate to
+/// these, exactly as the Android WeeklyDigestCard chipTone/rowAccessibility gate on the same flag.
+enum WeeklyDigestChipStyle {
+    /// A rough comparison keeps its arrow + % but the chip stays grey regardless of direction, so it
+    /// can't frame a green/rose verdict off 1-2 days (the #463 complaint).
+    static func neutralizesTone(_ s: WeeklyMetricSummary) -> Bool { s.isRoughComparison }
+    /// A rough comparison also drops the ", a good sign."/", worth a look." VoiceOver frame so the
+    /// spoken row matches the neutral chip.
+    static func dropsVerdictFrame(_ s: WeeklyMetricSummary) -> Bool { s.isRoughComparison }
 }
 
 // MARK: - Digest score card (one headline domain: gauge + week-over-week chip)

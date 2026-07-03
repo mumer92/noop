@@ -23,6 +23,12 @@ data class StreamBatch(
     val resp: List<RespRow> = emptyList(),
     val gravity: List<GravityRow> = emptyList(),
     val steps: List<StepRow> = emptyList(),
+    /**
+     * The strap's OWN band sleep_state per record (#175), carried verbatim off @81's high nibble. Optional
+     * signal (only 5/MG v18 records emit it; a WHOOP 4.0 leaves it empty), consumed by the H7 re-onset
+     * CONFIRM guard and shown as a Deep Timeline track. Never overrides the derived stage.
+     */
+    val sleepState: List<SleepStateRow> = emptyList(),
     /** HR derived from the WHOOP 5/MG v26 optical PPG waveform (autocorrelation). (#156) */
     val ppgHr: List<PpgHrRow> = emptyList(),
     /**
@@ -37,7 +43,7 @@ data class StreamBatch(
     val isEmpty: Boolean
         get() = hr.isEmpty() && rr.isEmpty() && events.isEmpty() && battery.isEmpty() &&
             spo2.isEmpty() && skinTemp.isEmpty() && resp.isEmpty() && gravity.isEmpty() &&
-            steps.isEmpty() && ppgHr.isEmpty()
+            steps.isEmpty() && sleepState.isEmpty() && ppgHr.isEmpty()
 }
 
 // Device-agnostic decoded rows (deviceId attached when inserted). Mirror Streams.swift shapes.
@@ -56,6 +62,11 @@ data class SkinTempRow(val ts: Long, val raw: Int)
  * persisted store (which carries only ts/counter today) are unchanged.
  */
 data class StepRow(val ts: Long, val counter: Int, val activityClass: Int? = null)
+/**
+ * The strap's OWN @81 high-nibble band sleep_state at [ts] (0 wake/1 still/2 asleep/3 up), decoded and
+ * streamed but dropped at storage until #175. deviceId attached on insert. Swift `SleepStateSample`.
+ */
+data class SleepStateRow(val ts: Long, val state: Int)
 data class RespRow(val ts: Long, val raw: Int)
 data class GravityRow(val ts: Long, val x: Double, val y: Double, val z: Double)
 /** HR derived from the v26 PPG waveform: [ts] window-centre sec, [bpm], [conf] in 0…1. (#156) */
@@ -175,6 +186,13 @@ class WhoopRepository(private val dao: WhoopDao) {
         // it.activityClass is null when the @63 byte was 0xFF/invalid/absent → stored as SQL NULL.
         val stepIds = if (streams.steps.isEmpty()) emptyList() else
             dao.insertSteps(streams.steps.map { StepSample(deviceId, it.ts, it.counter, it.activityClass) })
+        // Band sleep_state (#175). Persist-only, same as steps — the strap's OWN @81 high-nibble state
+        // (0 wake/1 still/2 asleep/3 up), decoded and streamed but dropped at storage until now. Idempotent
+        // by (deviceId, ts); not counted into InsertCounts (no consumer reads a count). The raw 0-3 code is
+        // stored verbatim — a strap that never reports it inserts nothing.
+        if (streams.sleepState.isNotEmpty()) {
+            dao.insertSleepState(streams.sleepState.map { SleepStateSampleEntity(deviceId, it.ts, it.state) })
+        }
         val respIds = if (streams.resp.isEmpty()) emptyList() else
             dao.insertResp(streams.resp.map { RespSample(deviceId, it.ts, it.raw) })
         val gravIds = if (streams.gravity.isEmpty()) emptyList() else
@@ -229,13 +247,21 @@ class WhoopRepository(private val dao: WhoopDao) {
      *  bed AND reverting the edit. Every other field (efficiency, restingHr, avgHrv, stagesJSON) is
      *  preserved via [SleepSession.copy]. */
     suspend fun updateSleepSessionTimes(session: SleepSession, newStartTs: Long, newEndTs: Long) {
+        // #940 belt-and-braces: never persist a future-ending or inverted corrected window, whatever
+        // the UI sent. The Sleep screen's own guards (cross-midnight bed auto-correct + the disjoint
+        // confirm) should make this unreachable; it is the last line so no client misbehaviour can
+        // write a phantom night the display merge cannot render. Twin of Swift
+        // Repository.editSleepTimes' SleepEditGuard.clampedEditWindow gate.
+        val (safeStartTs, safeEndTs) = com.noop.analytics.SleepEditGuard.clampedEditWindow(
+            newStartTs, newEndTs, System.currentTimeMillis() / 1000L,
+        ) ?: return
         val reclipped = com.noop.analytics.SleepWindowReclip.reclip(
-            session.stagesJSON, session.effectiveStartTs, session.endTs, newStartTs, newEndTs,
+            session.stagesJSON, session.effectiveStartTs, session.endTs, safeStartTs, safeEndTs,
         )
         dao.upsertSleepSessions(
             listOf(session.copy(
-                startTsAdjusted = newStartTs,
-                endTs = newEndTs,
+                startTsAdjusted = safeStartTs,
+                endTs = safeEndTs,
                 userEdited = true,
                 stagesJSON = reclipped ?: session.stagesJSON,
             )),
@@ -244,14 +270,37 @@ class WhoopRepository(private val dao: WhoopDao) {
 
     /** Remove a sleep session entirely , the delete half of [updateSleepSessionTimes] with no
      *  re-insert. (deviceId, startTs) is the primary key, so it uniquely identifies the row, letting
-     *  the user clear a misread or spurious night so the day recomputes without it (#281). */
+     *  the user clear a misread or spurious night so the day recomputes without it (#281).
+     *
+     *  #65: a DETECTED night is tombstoned so the recompute does not silently regenerate it (mirrors the
+     *  dismissedWorkout marker; `endTs` is the span the engine's overlap test uses, since a re-detected
+     *  onset can drift second-to-second). A user-created/edited (`userEdited`) night (a hand-corrected
+     *  night or a manually-added nap) is deleted WITHOUT a tombstone: it is never re-detected, so
+     *  suppressing its window would needlessly block a real future night overlapping it. The tombstone is
+     *  written under the row's OWN [SleepSession.deviceId] and the engine reads the union of both id
+     *  namespaces (see [dismissedSleeps], #65 3A). */
     suspend fun deleteSleepSession(session: SleepSession) {
         dao.deleteSleepSession(session.deviceId, session.startTs)
-        // #33: record a durable tombstone so the recompute doesn't regenerate this night (mirrors the
-        // dismissedWorkout marker). `endTs` is the span the engine's overlap test uses, since a
-        // re-detected onset can drift second-to-second.
-        dao.insertDismissedSleep(listOf(DismissedSleep(session.deviceId, session.startTs, session.endTs)))
+        if (com.noop.analytics.DismissedSleepGuard.writesTombstoneOnDelete(session.userEdited)) {
+            dao.insertDismissedSleep(listOf(DismissedSleep(session.deviceId, session.startTs, session.endTs)))
+        }
     }
+
+    /** Undo a [deleteSleepSession] (#65): lift the tombstone and restore the deleted row into its ORIGINAL
+     *  namespace (the row still carries its owning `deviceId`), preserving `userEdited` so the next analyze
+     *  pass does NOT treat a hand-corrected night as a fresh detected twin (HAZARD 2). Single-level +
+     *  transient: the Sleep screen's undo snackbar calls this within a few seconds. The tombstone lift is
+     *  a no-op for a `userEdited` delete (which wrote none). Mirrors Swift Repository.undoDeleteSleepSession. */
+    suspend fun undoDeleteSleepSession(session: SleepSession) {
+        dao.deleteDismissedSleep(session.deviceId, session.startTs)
+        dao.upsertSleepSessions(listOf(session))
+    }
+
+    /** Lift a deleted-sleep tombstone by (deviceId, startTs) (#65 "Allow re-detection" escape hatch): the
+     *  night regenerates from raw on the next analyze pass for a computed night. An imported night can't be
+     *  re-created (no raw to re-derive); the caller shows that honest caption. */
+    suspend fun allowSleepReDetection(deviceId: String, startTs: Long) =
+        dao.deleteDismissedSleep(deviceId, startTs)
 
     /** #899 dedup heal: remove ONE sleep-session row WITHOUT the #33 dismissal tombstone. The heal
      *  deletes stale timebase-shifted duplicates of a night whose canonical copy is STAYING; a tombstone
@@ -315,17 +364,22 @@ class WhoopRepository(private val dao: WhoopDao) {
      *  NEVER folded into the night's main sleep (which would mislabel the awake daytime gap as light
      *  sleep). Purely additive , the DAO's IGNORE-on-conflict makes a same-onset add a no-op. */
     suspend fun addManualNap(strapDeviceId: String, startTs: Long, endTs: Long) {
-        if (endTs <= startTs) return
+        // #940 belt-and-braces (same rule as updateSleepSessionTimes): a manually-added session
+        // can't end in the future or invert; a future nap would otherwise own the tab's newest day
+        // as an all-awake phantom exactly like the bad edit did. The clamped end is used verbatim.
+        val (safeStartTs, safeEndTs) = com.noop.analytics.SleepEditGuard.clampedEditWindow(
+            startTs, endTs, System.currentTimeMillis() / 1000L,
+        ) ?: return
         val computedId = computedDeviceId(strapDeviceId)
-        val stagesJSON = com.noop.analytics.SleepStageHealer.restageFromRaw(this, strapDeviceId, startTs, endTs)
+        val stagesJSON = com.noop.analytics.SleepStageHealer.restageFromRaw(this, strapDeviceId, safeStartTs, safeEndTs)
             ?: com.noop.analytics.AnalyticsEngine.encodeStages(
-                listOf(com.noop.analytics.StageSegment(start = startTs, end = endTs, stage = "wake")),
+                listOf(com.noop.analytics.StageSegment(start = safeStartTs, end = safeEndTs, stage = "wake")),
             )
         dao.insertSleepSession(
             SleepSession(
                 deviceId = computedId,
-                startTs = startTs,
-                endTs = endTs,
+                startTs = safeStartTs,
+                endTs = safeEndTs,
                 efficiency = sleepEfficiency(stagesJSON),
                 stagesJSON = stagesJSON,
                 userEdited = true,
@@ -485,6 +539,13 @@ class WhoopRepository(private val dao: WhoopDao) {
         strapDeviceId: String = "my-whoop",
         minSamples: Long = 60,
         cap: Int = 300,
+        // #961: the user's HRmax + sex. When supplied, a strap-native row whose Effort (strain) is null gets
+        // one recomputed from the strap trace on display, so a live/manual session that ended with sparse HR
+        // (near-zero strain at save on a 5/MG) can't read a blank Effort while the DAY total counted the bout.
+        // null (the default) leaves every existing call site byte-identical: no raw-sample read, strain stays
+        // as stored. Display-only; the durable value is written by IntelligenceEngine.rescoreManualWorkouts.
+        strainMaxHR: Double? = null,
+        strainSex: String = "male",
     ): List<WorkoutRow> {
         var budget = cap
         return rows.map { row ->
@@ -494,18 +555,28 @@ class WhoopRepository(private val dao: WhoopDao) {
             // their own avg/max and are only filled when missing.
             val src = row.source.lowercase()
             val strapNative = src == "manual" || src.endsWith("-noop")
-            if (!strapNative && row.avgHr != null) return@map row
+            // #961: a strap-native row still missing a strain is a fill target even when its avgHr is present.
+            val needsStrainFill = strapNative && row.strain == null && strainMaxHR != null
+            if (!strapNative && row.avgHr != null && !needsStrainFill) return@map row
             budget -= 1
             val stats = dao.hrWindowStats(strapDeviceId, row.startTs, row.endTs)
-            if (stats.n >= minSamples && stats.avg != null && stats.max != null) {
-                if (strapNative) {
-                    // True mean / peak of the very samples the graph + zones + effort use.
-                    row.copy(avgHr = stats.avg.roundToInt(), maxHr = stats.max)
-                } else {
-                    // Imported row with no avg , fill from strap, preserving any imported max.
-                    row.copy(avgHr = stats.avg.roundToInt(), maxHr = row.maxHr ?: stats.max)
-                }
-            } else row
+            if (stats.n < minSamples || stats.avg == null || stats.max == null) return@map row
+            // #961: recompute Effort from the SAME samples the graph/zones use. Read the raw window ONLY when
+            // this row actually needs a strain (keeps the common no-fill path a single aggregate query), and
+            // let StrainScorer return null on a still-too-thin window (never a fabricated number).
+            val filledStrain = if (needsStrainFill && strainMaxHR != null) {
+                val samples = dao.hrSamples(strapDeviceId, row.startTs, row.endTs, 8000)
+                com.noop.analytics.StrainScorer.strain(samples, maxHR = strainMaxHR, sex = strainSex)
+            } else null
+            if (strapNative) {
+                // True mean / peak of the very samples the graph + zones + effort use; FILL a null Effort
+                // (never override a stored one) from the recompute.
+                row.copy(avgHr = stats.avg.roundToInt(), maxHr = stats.max,
+                         strain = row.strain ?: filledStrain)
+            } else {
+                // Imported row with no avg , fill from strap, preserving any imported max.
+                row.copy(avgHr = stats.avg.roundToInt(), maxHr = row.maxHr ?: stats.max)
+            }
         }
     }
 
@@ -526,6 +597,15 @@ class WhoopRepository(private val dao: WhoopDao) {
 
     suspend fun stepSamples(deviceId: String, from: Long, to: Long, limit: Int = DEFAULT_LIMIT) =
         dao.stepSamples(deviceId, from, to, limit)
+
+    /**
+     * The strap's OWN band sleep_state samples (#175) in [from, to] as (ts, state) pairs, ascending. Feeds
+     * the Deep Timeline band-state track and the per-session grid the H7 re-onset confirm guard reads. Empty
+     * when the strap never reported it (a WHOOP 4.0, or a not-yet-offloaded window). Swift `sleepStateSamples`.
+     */
+    suspend fun sleepStateSamples(deviceId: String, from: Long, to: Long, limit: Int = DEFAULT_LIMIT):
+        List<SleepStateRow> =
+        dao.sleepStateSamples(deviceId, from, to, limit).map { SleepStateRow(it.ts, it.state) }
 
     /**
      * The latest (greatest-ts) non-null @63 activity class over [from, to], read across the active strap ∪
@@ -554,9 +634,16 @@ class WhoopRepository(private val dao: WhoopDao) {
     suspend fun dismissedDetected(strapDeviceId: String = "my-whoop"): List<DismissedWorkout> =
         dao.dismissedWorkouts(computedDeviceId(strapDeviceId))
 
-    /** Deleted-sleep tombstones for the computed source of [strapDeviceId] (#33). Mirrors dismissedDetected. */
+    /** Deleted-sleep tombstones for BOTH the imported and computed sources of [strapDeviceId] (#33/#65).
+     *
+     *  HAZARD FIX (#65 3A): [deleteSleepSession] writes the tombstone under the deleted row's OWN
+     *  `session.deviceId` ("my-whoop" for an IMPORTED night, "my-whoop-noop" for a computed one). This
+     *  read used to consult ONLY the computed id, so a deleted IMPORTED night wrote a tombstone the engine
+     *  never saw, and a strap raw re-detection over that window resurrected it as a computed twin. Reading
+     *  the UNION of both ids fixes it with NO data migration: tombstones written under either id are now
+     *  found. De-duping on (deviceId,startTs) is unnecessary because the two id namespaces never collide. */
     suspend fun dismissedSleeps(strapDeviceId: String = "my-whoop"): List<DismissedSleep> =
-        dao.dismissedSleeps(computedDeviceId(strapDeviceId))
+        dao.dismissedSleeps(strapDeviceId) + dao.dismissedSleeps(computedDeviceId(strapDeviceId))
 
     /**
      * Persist a retroactive / edited manual workout under the strap source. [replacing] is the row the
@@ -610,6 +697,48 @@ class WhoopRepository(private val dao: WhoopDao) {
     suspend fun deleteWorkout(row: WorkoutRow) {
         if (row.source.lowercase().endsWith("-noop")) { dismissDetected(row); return }
         dao.deleteWorkoutByKey(row.deviceId, row.startTs, row.sport)
+    }
+
+    /**
+     * #64: merge two-or-more overlapping / adjacent MANUAL or DETECTED sessions into ONE manual session
+     * ([merged], built by the pure [com.noop.ui.WorkoutMerge.merge]), then retire the originals. Imported
+     * history is NEVER passed here (the caller gates on WorkoutMerge.canMerge, and this only writes the
+     * manual-row path), so the imported-read-only invariant holds. The Android WorkoutRow carries its own
+     * routePolyline, so the route re-key is a field copy (no side-store): keep the longest original route.
+     * The caller runs rescoreAfterEdit (rescores strain from strap HR, the #598 pattern) + reloads.
+     */
+    suspend fun mergeWorkouts(originals: List<WorkoutRow>, merged: WorkoutRow) {
+        if (originals.size < 2) return
+        // Keep the longest original route on the merged row (mirrors macOS RouteStore re-key #10).
+        val keptRoute = originals.mapNotNull { it.routePolyline }.maxByOrNull { it.length }
+        val mergedWithRoute = if (keptRoute != null) merged.copy(routePolyline = keptRoute) else merged
+        saveManualWorkout(mergedWithRoute)
+        // Retire each original. Skip any row whose natural key matches the merged row's, so we never
+        // dismiss/delete the span the merged row now owns.
+        for (r in originals) {
+            if (r.startTs == merged.startTs && r.sport == merged.sport) continue
+            when {
+                r.source.lowercase().endsWith("-noop") -> dismissDetected(r)
+                r.source.lowercase() == "manual" -> dao.deleteWorkoutByKey(r.deviceId, r.startTs, r.sport)
+                // Defensive: canMerge already excludes imported rows; never rewrite imported history.
+                else -> continue
+            }
+        }
+    }
+
+    /**
+     * #64: bulk-delete the selected sessions, routing per class exactly like the single-row path
+     * (detected -> durable dismiss, manual -> delete). Imported rows are never selectable so never reach
+     * here. The caller reloads afterwards.
+     */
+    suspend fun bulkDeleteWorkouts(rows: List<WorkoutRow>) {
+        for (r in rows) {
+            when {
+                r.source.lowercase().endsWith("-noop") -> dismissDetected(r)
+                r.source.lowercase() == "manual" -> dao.deleteWorkoutByKey(r.deviceId, r.startTs, r.sport)
+                else -> continue
+            }
+        }
     }
 
     suspend fun respSamples(deviceId: String, from: Long, to: Long, limit: Int = DEFAULT_LIMIT) =

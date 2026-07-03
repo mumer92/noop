@@ -167,7 +167,11 @@ struct SettingsView: View {
 
     var body: some View {
         ScreenScaffold(title: "Settings",
-                       subtitle: "Your numbers, your strap, and how NOOP works. All on \(Platform.deviceNounPhrase).") {
+                       subtitle: "Your numbers, your strap, and how NOOP works. All on \(Platform.deviceNounPhrase).",
+                       // The day-of-sky liquid backdrop, matching Today / Health / Sleep / Trends / Devices:
+                       // a fixed, full-bleed time-of-day sky behind the scroll content (it does not scroll).
+                       // Settings' own frosted cards sit on the dark canvas below the sky band, unchanged.
+                       topBackground: liquidScaffoldSky()) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                 // Everyday sections stay expanded (S3): the ones a first-run user actually needs.
                 profilePhotoCard.staggeredAppear(index: 0)
@@ -411,7 +415,7 @@ struct SettingsView: View {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidPressStyle())
                 .accessibilityLabel("Steps estimate calibration. \(stepsCalibrationSummary). Opens the calibration screen.")
                 Text("For a WHOOP 4.0, which sends no step count: NOOP estimates steps from motion, calibrated to your phone. Tap to see how close it is and adjust it.")
                     .font(StrandFont.footnote)
@@ -609,8 +613,8 @@ struct SettingsView: View {
                 // Display-only; the stored value never changes, so a flip just re-labels every Effort read-out.
                 FormRow(label: "Effort scale") {
                     Picker("Effort scale", selection: $effortScaleRaw) {
-                        Text("0–100").tag(EffortScale.hundred.rawValue)
-                        Text("0–21").tag(EffortScale.whoop.rawValue)
+                        Text("0-100").tag(EffortScale.hundred.rawValue)
+                        Text("0-21").tag(EffortScale.whoop.rawValue)
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
@@ -955,7 +959,7 @@ struct SettingsView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LiquidPressStyle())
             .accessibilityLabel("Open Test Centre")
         }
     }
@@ -1053,9 +1057,35 @@ struct SettingsView: View {
     /// #22); the raw-sensor CSV diagnostic is split into its own card so it stays available on every
     /// model — a 4.0 owner still needs the export to share decoded streams.
     @ViewBuilder private var experimentalCard: some View {
+        liquidTodayCard
         if showFiveMGControls { fiveMGCard }
         sleepStagingCard
         rawSensorDiagnosticsCard
+    }
+
+    /// Opt-in liquid Today redesign (default ON in this build). Off falls back to the
+    /// classic dashboard immediately, no rebuild. Same data either way.
+    @AppStorage("noop.liquidTodayEnabled") private var liquidTodayEnabled = true
+    private var liquidTodayCard: some View {
+        SettingsSection(
+            icon: "drop.fill",
+            title: "Experimental · Liquid Today",
+            blurb: "A redesigned Today screen in the new liquid language: the scores as living liquid, a time-of-day sky, and a calmer layout. Same numbers, new look."
+        ) {
+            VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
+                Toggle(isOn: $liquidTodayEnabled) {
+                    Text("Liquid Today (prototype)")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(StrandPalette.accent)
+                Text("Replaces the Today tab with the prototype redesign. Turn it off any time to return to the classic dashboard. Reads the same live data from your strap.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     /// Opt-in experimental sleep staging (V2). Model-agnostic — the V2 recipe works on WHOOP 4 and 5 — so it
@@ -1569,7 +1599,7 @@ struct SettingsView: View {
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.accent)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidPressStyle())
                 .accessibilityLabel("Open Backup and Sync to a folder")
             }
         }
@@ -1702,7 +1732,7 @@ struct SettingsView: View {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidPressStyle())
                 .accessibilityLabel("How NOOP works")
 
                 // How your scores work — the honest explainer for Charge / Effort / Rest and the
@@ -1731,7 +1761,7 @@ struct SettingsView: View {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidPressStyle())
                 .accessibilityLabel("How your scores work")
 
                 // About Apple Watch data: the honest capability/confidence page for running NOOP off
@@ -1763,7 +1793,7 @@ struct SettingsView: View {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidPressStyle())
                 .accessibilityLabel("About Apple Watch data")
 
                 // Storage (#590) — on-device space breakdown (database, leftover import Inbox, stranded
@@ -1793,7 +1823,7 @@ struct SettingsView: View {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidPressStyle())
                 .accessibilityLabel("Storage")
 
                 #if os(iOS)
@@ -2012,7 +2042,7 @@ struct SettingsView: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidPressStyle())
         .accessibilityLabel("Diagnostics")
     }
 
@@ -2146,7 +2176,7 @@ private struct SettingsDisclosureGroup<Content: View>: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LiquidPressStyle())
             .accessibilityLabel(title)
             .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
             .accessibilityHint("Shows the advanced settings sections")

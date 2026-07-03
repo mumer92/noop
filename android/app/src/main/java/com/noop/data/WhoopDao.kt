@@ -61,6 +61,10 @@ interface WhoopDao : DeviceRegistryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertSteps(rows: List<StepSample>): List<Long>
 
+    /** The strap's OWN band sleep_state per record (#175). Idempotent by (deviceId, ts). */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertSleepState(rows: List<SleepStateSampleEntity>): List<Long>
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertResp(rows: List<RespSample>): List<Long>
 
@@ -255,6 +259,14 @@ interface WhoopDao : DeviceRegistryDao {
             "ORDER BY ts ASC LIMIT :limit"
     )
     suspend fun stepSamples(deviceId: String, from: Long, to: Long, limit: Int): List<StepSample>
+
+    /** The strap's OWN banked band sleep_state (#175) in [from, to], ascending. Feeds the Deep Timeline
+     *  band-state track and the per-session grid the H7 re-onset confirm guard reads. */
+    @Query(
+        "SELECT * FROM sleepStateSample WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
+            "ORDER BY ts ASC LIMIT :limit"
+    )
+    suspend fun sleepStateSamples(deviceId: String, from: Long, to: Long, limit: Int): List<SleepStateSampleEntity>
 
     @Query(
         "SELECT * FROM respSample WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to " +
@@ -516,9 +528,17 @@ interface WhoopDao : DeviceRegistryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertDismissedSleep(rows: List<DismissedSleep>)
 
-    /** All deleted-sleep markers for a [deviceId] (the computed "<id>-noop" source the engine writes). */
+    /** All deleted-sleep markers for a [deviceId]. The engine reads the UNION of the imported id and its
+     *  computed "<id>-noop" id (see WhoopRepository.dismissedSleeps, #65 3A), since a tombstone is written
+     *  under whichever namespace owned the deleted row. */
     @Query("SELECT * FROM dismissedSleep WHERE deviceId = :deviceId")
     suspend fun dismissedSleeps(deviceId: String): List<DismissedSleep>
+
+    /** Lift ONE deleted-sleep tombstone (#65 undo / "allow re-detection"): removes the marker so the
+     *  night is re-detected from raw on the next analyze pass. Keyed by (deviceId, startTs): the same
+     *  natural key the insert uses, so it removes exactly the tombstone [deleteSleepSession] wrote. */
+    @Query("DELETE FROM dismissedSleep WHERE deviceId = :deviceId AND startTs = :startTs")
+    suspend fun deleteDismissedSleep(deviceId: String, startTs: Long)
 
     // MARK: - Frontier / stats (Reads.swift)
 

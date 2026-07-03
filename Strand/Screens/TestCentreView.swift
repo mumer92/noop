@@ -348,6 +348,18 @@ private struct TestModeRow: View {
         TestCentre.startedAt(mode.domain).map { Date().timeIntervalSince($0) }
     }
 
+    /// The HONEST per-mode captured-day count for a guided row (#965): distinct days THIS mode produced its
+    /// own trace on, read from the same shareable log the report exports, so each active mode accumulates
+    /// its OWN count instead of every guided row sharing one elapsed-clock number. nil for a toggle mode
+    /// (no "K of N") and when the mode is off. Recomputes with `live.log` (published) so the row updates as
+    /// new capture days land.
+    private var capturedUnits: Int? {
+        guard on, case .guided = mode.capture else { return nil }
+        return CaptureAccumulator.capturedDays(domain: mode.domain,
+                                               reportText: live.exportableLogText(),
+                                               tzOffsetSeconds: TimeZone.current.secondsFromGMT())
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
@@ -355,7 +367,8 @@ private struct TestModeRow: View {
                     .foregroundStyle(StrandPalette.accent).frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(mode.title).font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
-                    Text(TestCentreLayout.statusText(for: mode, active: on, elapsedSeconds: elapsed))
+                    Text(TestCentreLayout.statusText(for: mode, active: on, elapsedSeconds: elapsed,
+                                                     capturedUnits: capturedUnits))
                         .font(StrandFont.caption).foregroundStyle(StrandPalette.textSecondary)
                 }
                 Spacer()

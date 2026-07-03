@@ -59,7 +59,12 @@ struct WorkoutDetailView: View {
                        // zone-split chart and the effort card). The LazyVStack path builds the off-screen
                        // ones on demand — byte-identical layout — so a tall detail doesn't materialise the
                        // map + both charts before the header is even on screen.
-                       lazy: true) {
+                       lazy: true,
+                       // The day-of-sky liquid backdrop, matching the Workouts list this detail opens from
+                       // and every other liquid screen. Fixed and full-bleed; it does not scroll. This
+                       // screen is presented in a sheet wrapped in a NavigationStack by WorkoutsView, so it
+                       // needs no extra macOS NavigationStack of its own.
+                       topBackground: liquidScaffoldSky()) {
             headerCard
             statStrip
             routeCard
@@ -368,20 +373,37 @@ struct WorkoutDetailView: View {
     // MARK: - Effort contribution
 
     private func effortCard(strain: Double) -> some View {
-        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+        // The session's Effort as the signature liquid gauge: a `LiquidVessel` tinted Effort, filled to the
+        // session's contribution on the user's selected scale, with the value counting up over it — the
+        // same hero language as the Workouts list's Typical Effort gauge and the Sleep Rest hero. The
+        // explanatory sentence keeps its place beside the gauge.
+        let displayValue = UnitFormatter.effortValue(strain, scale: effortScale)
+        let scaleMax: Double = effortScale == .whoop ? 21 : 100
+        let fraction = max(0, min(1, displayValue / scaleMax))
+        return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             SectionHeader("Effort", overline: "This session")
             NoopCard(tint: StrandPalette.effortColor) {
                 HStack(alignment: .center, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        // The session's Effort contribution ticks up to its value — the NOOP signature.
-                        CountUpText(value: UnitFormatter.effortValue(strain, scale: effortScale),
-                                    format: { String(format: "%.1f", $0) },
-                                    font: StrandFont.number(34),
-                                    color: StrandPalette.effortBright)
-                        Text(effortScale == .whoop ? "strain (0–21)" : "Effort (0–100)")
-                            .font(StrandFont.footnote)
-                            .foregroundStyle(StrandPalette.textTertiary)
+                    ZStack {
+                        // Static (posed) vessel — a compact liquid gauge inside a card, so it costs a single
+                        // cached frame rather than a live canvas (same call as Trends' pip vessels).
+                        LiquidVessel(value: fraction, tint: StrandPalette.effortColor, animated: false)
+                            .frame(width: 88, height: 88)
+                        VStack(spacing: 0) {
+                            // The session's Effort contribution ticks up to its value — the NOOP signature.
+                            CountUpText(value: displayValue,
+                                        format: { String(format: "%.1f", $0) },
+                                        font: StrandFont.rounded(28),
+                                        color: StrandPalette.textPrimary)
+                                .shadow(color: .black.opacity(0.5), radius: 5, y: 1)
+                            Text(effortScale == .whoop ? "of 21" : "of 100")
+                                .font(StrandFont.caption)
+                                .foregroundStyle(StrandPalette.textSecondary)
+                        }
+                        .allowsHitTesting(false)
                     }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(String(localized: "Effort \(UnitFormatter.effortDisplay(strain, scale: effortScale)) \(effortScale == .whoop ? "of 21" : "of 100")"))
                     Spacer(minLength: 0)
                     Text("This session's contribution to the day's Effort, as captured during the workout.")
                         .font(StrandFont.subhead)
@@ -444,7 +466,7 @@ struct WorkoutDetailView: View {
         Self.timeFmt.string(from: Date(timeIntervalSince1970: TimeInterval(ts)))
     }
     private func timeRangeLabel(_ start: Int, _ end: Int) -> String {
-        end > start ? "\(timeLabel(start))–\(timeLabel(end))" : timeLabel(start)
+        end > start ? "\(timeLabel(start))-\(timeLabel(end))" : timeLabel(start)
     }
     private func durationLabel(_ s: Double?) -> String {
         guard let s, s > 0 else { return "–" }

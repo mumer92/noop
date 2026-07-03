@@ -139,7 +139,7 @@ enum MetricCatalog {
 
         // ── Effort (was Strain)
         d("strain", String(localized: "Effort"), "Effort", "/100", "my-whoop", "flame", 1, nil,
-          String(localized: "Cardiovascular load for the day, on a 0–100 scale (was 0–21).")),
+          String(localized: "Cardiovascular load for the day, on a 0-100 scale (was 0-21).")),
         d("steps", String(localized: "Steps"), "Effort", "", "apple-health", "figure.walk", 0, true),
         // On-device steps ESTIMATE for a WHOOP 4.0 (no real step count over BLE): the strap's daily
         // motion volume scaled by a personal calibration. Stored under the computed "-noop" source, so
@@ -147,8 +147,8 @@ enum MetricCatalog {
         // real "steps" above — labelled "(estimated)" so it's never mistaken for a measured count.
         d("steps_est", String(localized: "Steps (estimated)"), "Effort", "steps", "my-whoop", "figure.walk.motion", 0, true,
           String(localized: "Estimated from your WHOOP's motion, calibrated to your phone. Not a measured step count.")),
-        d("hr_zones13_min", String(localized: "HR Zones 1–3"), "Effort", "min", "my-whoop", "heart", 0, nil),
-        d("hr_zones45_min", String(localized: "HR Zones 4–5"), "Effort", "min", "my-whoop", "heart.fill", 0, nil),
+        d("hr_zones13_min", String(localized: "HR Zones 1-3"), "Effort", "min", "my-whoop", "heart", 0, nil),
+        d("hr_zones45_min", String(localized: "HR Zones 4-5"), "Effort", "min", "my-whoop", "heart.fill", 0, nil),
         d("hr_zones_all_min", String(localized: "HR Zones (All)"), "Effort", "min", "my-whoop", "heart.text.square", 0, nil),
         d("strength_min", String(localized: "Strength Activity Time"), "Effort", "min", "my-whoop", "dumbbell", 0, nil),
         d("active_kcal", String(localized: "Active Energy"), "Effort", "kcal", "apple-health", "flame.fill", 0, nil),
@@ -189,6 +189,23 @@ enum MetricCatalog {
     ]
 
     static func inCategory(_ c: String) -> [MetricDescriptor] { all.filter { $0.category == c } }
+
+    /// Localized display name for a catalog category, mapped AT THE RENDER SITE only. The
+    /// catalog's `category` VALUES stay English identifiers on purpose (`inCategory` and the
+    /// colour-world / gradient switches compare them raw), so screens must never feed this
+    /// function's output back into matching logic. Unknown values pass through untranslated.
+    static func categoryDisplayName(_ category: String) -> String {
+        switch category {
+        case "Heart":     return String(localized: "Heart")
+        case "Charge":    return String(localized: "Charge")
+        case "Rest":      return String(localized: "Rest")
+        case "Effort":    return String(localized: "Effort")
+        case "Health":    return String(localized: "Health")
+        case "Nutrition": return String(localized: "Nutrition")
+        case "Mind":      return String(localized: "Mind")
+        default:          return category
+        }
+    }
 
     private static func d(_ key: String, _ title: String, _ category: String, _ unit: String,
                           _ source: String, _ icon: String, _ decimals: Int,

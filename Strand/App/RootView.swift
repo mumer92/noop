@@ -196,6 +196,8 @@ struct RootView: View {
     /// Cross-screen navigation requests (e.g. Live → "Manage devices"). Observed here so a screen can
     /// switch the sidebar selection without owning it — see `NavRouter`.
     @EnvironmentObject var router: NavRouter
+    /// The liquid Today (default) vs the classic Today, same flag the iOS shell + Settings toggle read.
+    @AppStorage("noop.liquidTodayEnabled") private var liquidTodayEnabled = true
     @State private var selection: NavItem? = .today
     /// Which sidebar groups are expanded (S1, #805). Default = the group owning the launch selection
     /// (`.today`). The single-item Today/Sleep sections always read expanded so their one row shows; the
@@ -274,15 +276,23 @@ struct RootView: View {
             .background(StrandPalette.surfaceBase)
             .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 280)
         } detail: {
-            detail
-                // Tab/section crossfade — README §Motion: "switching tabs uses a crossfade ~240ms",
-                // global calm easing cubic-bezier(0.22,1,0.36,1). Opacity swap between detail roots
-                // keyed on the selected nav item; restrained (no slide) for the desktop sidebar shell.
-                .id(selection ?? .today)
-                .transition(.opacity)
-                .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24), value: selection)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(StrandPalette.surfaceBase.ignoresSafeArea())
+            // The crossfade `.id` lives on the INNER switched content, not on the detail-column root
+            // the split view hosts. A stable ZStack hosts the column; only the `detail` child inside it
+            // carries `.id(selection)`. Keeping the split view's hosted view identity stable across
+            // sidebar switches stops SwiftUI cold-mounting the whole detail column every time (#833):
+            // an `.id` on the column ROOT re-created the hosted subtree on each switch, cold-starting
+            // the target screen and re-running its O(full-history) @MainActor reads, which froze macOS
+            // on a large DB. The child still gets a per-selection identity, so the opacity crossfade
+            // (README §Motion: "switching tabs uses a crossfade ~240ms", calm cubic-bezier
+            // (0.22,1,0.36,1)) fires unchanged: it inserts/removes the id'd child on each change.
+            ZStack {
+                detail
+                    .id(selection ?? .today)
+                    .transition(.opacity)
+            }
+            .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24), value: selection)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(StrandPalette.surfaceBase.ignoresSafeArea())
         }
         .task {
             await repo.refresh()
@@ -440,7 +450,9 @@ struct RootView: View {
     // macOS-only and leaves iOS untouched (TodayView's `.toolbar` stays on its own view body either way).
     @ViewBuilder private var todayDetail: some View {
         #if os(macOS)
-        NavigationStack { TodayView() }
+        NavigationStack {
+            if liquidTodayEnabled { LiquidTodayView() } else { TodayView() }
+        }
         #else
         TodayView()
         #endif

@@ -1563,7 +1563,7 @@ struct TodayView: View {
                                 Text("load \(String(format: "%.2f", acwr))")
                                     .font(StrandFont.captionNumber)
                                     .foregroundStyle(StrandPalette.textTertiary)
-                                    .help("Acute (7-day) vs chronic (28-day) training load. 0.8–1.3 is the sweet spot.")
+                                    .help("Acute (7-day) vs chronic (28-day) training load. 0.8-1.3 is the sweet spot.")
                             }
                         }
                         Text(r.summary).font(StrandFont.subhead)
@@ -2069,6 +2069,11 @@ struct TodayView: View {
         case .hydration:
             pinnedCardRow(icon: card.icon, tint: tint, title: card.title, subtitle: card.subtitle,
                           value: dashboardValue(card)) { HydrationView() }
+        case .coupled:
+            // The Coupled view row (#43) carries NO metric value, it is a tap-through to the full
+            // coupled day screen. An empty value renders just the icon + title + subtitle + chevron.
+            pinnedCardRow(icon: card.icon, tint: tint, title: card.title, subtitle: card.subtitle,
+                          value: dashboardValue(card)) { CoupledView() }
         }
     }
 
@@ -2088,6 +2093,7 @@ struct TodayView: View {
         case .steps:       return StrandPalette.metricCyan
         case .calories:    return StrandPalette.metricAmber
         case .hydration:   return StrandPalette.metricCyan
+        case .coupled:     return StrandPalette.chargeColor
         }
     }
 
@@ -2151,6 +2157,10 @@ struct TodayView: View {
             // value (a fresh day reads "0.0 / 3.2 L"); the goal is always derivable from the profile.
             guard let goal = hydrationGoalML else { return "—" }
             return HydrationGoal.cardValueString(totalML: hydrationTotalML ?? 0, goalML: goal)
+        case .coupled:
+            // A tap-through row with no metric value of its own, the row shows just the chevron. Returning
+            // an empty string (not "—") renders no number and leaves it un-dimmed (it isn't a missing value).
+            return ""
         }
     }
 
@@ -4102,7 +4112,7 @@ struct TodayView: View {
     }
 
     private func ringSupporting(_ d: DailyMetric?) -> String {
-        let hrv = d?.avgHrv.map { String(localized: "\(Int($0.rounded())) ms") } ?? "— ms"
+        let hrv = d?.avgHrv.map { String(localized: "\(Int($0.rounded())) ms") } ?? " - ms"
         let rhr = d?.restingHr.map { "\($0)" } ?? "—"
         return String(localized: "HRV \(hrv) · RHR \(rhr)")
     }
@@ -4180,7 +4190,7 @@ struct TodayView: View {
         let date = f.string(from: start)
         guard w.endTs > w.startTs else { return "\(date) · \(Self.hrTimeFmt.string(from: start))" }
         let end = Date(timeIntervalSince1970: TimeInterval(w.endTs))
-        return "\(date) · \(Self.hrTimeFmt.string(from: start))–\(Self.hrTimeFmt.string(from: end))"
+        return "\(date) · \(Self.hrTimeFmt.string(from: start))-\(Self.hrTimeFmt.string(from: end))"
     }
 
     /// Thousands-grouped integer string (steps / calories).

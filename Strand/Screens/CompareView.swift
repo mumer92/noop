@@ -160,7 +160,10 @@ struct CompareView: View {
                        // alignment/spacing/header). The content is one inner eager VStack; no staggered
                        // reveals, and the only GeometryReaders are chart-local (.chartOverlay plot rects),
                        // so nothing depends on eager layout of the scroll column.
-                       lazy: true) {
+                       lazy: true,
+                       // Liquid finish: the day-of-sky backdrop carries the liquid atmosphere across the
+                       // analysis tabs, exactly like Today and the batch-1 screens.
+                       topBackground: liquidScaffoldSky()) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                 metricSection
 
@@ -293,7 +296,7 @@ struct CompareView: View {
 
     private var metricSection: some View {
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-            SectionHeader("Metrics", overline: "Overlay 2–4 signals")
+            SectionHeader("Metrics", overline: "Overlay 2-4 signals")
             NoopCard {
                 VStack(alignment: .leading, spacing: NoopMetrics.gap) {
                     // Responsive: range pills + the Add menu side-by-side when there's room, else
@@ -340,7 +343,9 @@ struct CompareView: View {
             ForEach(MetricCatalog.categories, id: \.self) { category in
                 let metrics = MetricCatalog.inCategory(category)
                 if !metrics.isEmpty {
-                    Section(category) {
+                    // Section title localized at the render site only; `category` stays the
+                    // raw English identifier that `inCategory` filters on.
+                    Section(MetricCatalog.categoryDisplayName(category)) {
                         ForEach(metrics) { metric in
                             let isOn = selected.contains(metric)
                             Button {
@@ -394,8 +399,8 @@ struct CompareView: View {
             ChartCard(
                 title: "Normalized overlay",
                 subtitle: anyWidened
-                    ? String(localized: "Min–max normalized · sparse series widened past \(range.phrase) · \(inspectHint)")
-                    : String(localized: "Each line min–max normalized within \(range.phrase) · \(inspectHint)"),
+                    ? String(localized: "Min-max normalized · sparse series widened past \(range.phrase) · \(inspectHint)")
+                    : String(localized: "Each line min-max normalized within \(range.phrase) · \(inspectHint)"),
                 trailing: String(localized: "\(nonEmpty.count) series"),
                 // Anchor the overlay card to the brand-green chrome world; each line keeps its own
                 // categorical series colour so the lines stay distinguishable against the wash.
@@ -414,6 +419,14 @@ struct CompareView: View {
         VStack(spacing: 0) {
             ForEach(Array(series.enumerated()), id: \.element.id) { idx, s in
                 HStack(spacing: 10) {
+                    // A small liquid vessel posed at this series' LATEST value within its own min–max
+                    // window (the same 0–1 position the overlay's "now" end-cap sits at) — the liquid
+                    // accent tying the legend to the real series. Static, decorative (the min/max text
+                    // + colour swatch carry the meaning for VoiceOver).
+                    LiquidVessel(value: s.rows.last.map { s.normalized($0.value) },
+                                 tint: s.color, animated: false)
+                        .frame(width: 22, height: 22)
+                        .accessibilityHidden(true)
                     RoundedRectangle(cornerRadius: 2, style: .continuous)
                         .fill(s.color)
                         .frame(width: 14, height: 3)
@@ -422,7 +435,7 @@ struct CompareView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                     Spacer()
                     // Real min/max labels honour the Effort scale (#268); other metrics are unchanged.
-                    Text("\(s.metric.format(s.realMin, effortScale: effortScale)) – \(s.metric.format(s.realMax, effortScale: effortScale))")
+                    Text("\(s.metric.format(s.realMin, effortScale: effortScale))-\(s.metric.format(s.realMax, effortScale: effortScale))")
                         .font(StrandFont.captionNumber)
                         .foregroundStyle(StrandPalette.textSecondary)
                 }
@@ -528,6 +541,13 @@ struct CompareView: View {
         return NoopCard(tint: tint) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 10) {
+                    // A small liquid vessel filled to the correlation STRENGTH (|r|, a neutral 0–1
+                    // magnitude — not a health value), tinted by the relationship's own colour. Static
+                    // (posed) so a page of pair cards costs one cached frame each, matching Today's small
+                    // vessels. Decorative — the r read-out + sentence carry the meaning for VoiceOver.
+                    LiquidVessel(value: min(abs(p.r), 1), tint: tint, animated: false)
+                        .frame(width: 30, height: 30)
+                        .accessibilityHidden(true)
                     // Two color swatches for the pair.
                     HStack(spacing: 3) {
                         Circle().fill(p.a.color).frame(width: 8, height: 8)
@@ -547,6 +567,11 @@ struct CompareView: View {
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                // The strength magnitude drawn as a liquid tube — the horizontal progress idiom Today
+                // uses for its key-metric fills, here reading |r| from none (0) to a perfect link (1).
+                LiquidTube(frac: min(abs(p.r), 1), tint: tint, height: 8, animated: false)
+                    .accessibilityHidden(true)
 
                 Text("\(p.n) overlapping days · \(strengthWord(p.r)) \(directionWord(p.r)) correlation")
                     .font(StrandFont.footnote)

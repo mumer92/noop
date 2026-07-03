@@ -289,10 +289,10 @@ struct ManualWorkoutSheet: View {
         if sport.trimmingCharacters(in: .whitespaces).isEmpty { return String(localized: "Enter a sport.") }
         if start > Date() { return String(localized: "Start can't be in the future.") }
         if !avgHrText.trimmingCharacters(in: .whitespaces).isEmpty, avgHr == nil || !(25...250).contains(avgHr ?? -1) {
-            return String(localized: "Average HR must be 25–250 bpm.")
+            return String(localized: "Average HR must be 25-250 bpm.")
         }
         if !kcalText.trimmingCharacters(in: .whitespaces).isEmpty, kcal == nil || (kcal ?? -1) < 0 || (kcal ?? 0) > 20_000 {
-            return String(localized: "Calories must be 0–20,000.")
+            return String(localized: "Calories must be 0-20,000.")
         }
         return String(localized: "Check the values and try again.")
     }
@@ -315,9 +315,25 @@ struct ManualWorkoutSheet: View {
 // fixed list); an unusual sport can still be set afterwards via the manual edit sheet's free-text field.
 
 struct StartWorkoutSheet: View {
-    /// Called with the chosen sport name once the user taps Start. The host wires this to
-    /// `model.startWorkout(sport:)` (and presents the live workout view, as it does today).
+    /// Called with the chosen sport name once the user taps the action button. The host wires this to
+    /// `model.startWorkout(sport:)` (and presents the live workout view) by default, or (#64) to name a
+    /// merged session when the title/action are overridden.
     let onStart: (_ sport: String) -> Void
+
+    /// #64: heading + explainer + action-verb overrides so this picker doubles as the "name the merged
+    /// session" prompt. Defaults keep the "Start a workout" behaviour byte-identical.
+    private let heading: String
+    private let explainer: String
+    private let actionVerb: String
+
+    init(title: String? = nil, subtitle: String? = nil, actionVerb: String? = nil,
+         onStart: @escaping (_ sport: String) -> Void) {
+        self.onStart = onStart
+        self.heading = title ?? String(localized: "Start a workout")
+        self.explainer = subtitle
+            ?? String(localized: "Pick a sport. NOOP records HR, peak, average and effort from the live feed.")
+        self.actionVerb = actionVerb ?? String(localized: "Start")
+    }
 
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
@@ -337,10 +353,10 @@ struct StartWorkoutSheet: View {
                                 in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Start a workout")
+                    Text(heading)
                         .font(StrandFont.title2)
                         .foregroundStyle(StrandPalette.textPrimary)
-                    Text("Pick a sport. NOOP records HR, peak, average and effort from the live feed.")
+                    Text(explainer)
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -391,11 +407,11 @@ struct StartWorkoutSheet: View {
             HStack(spacing: NoopMetrics.space3) {
                 NoopButton("Cancel", kind: .tertiary) { dismiss() }
                 Spacer()
-                NoopButton("Start \(selected)", systemImage: "figure.run", kind: .primary) {
+                NoopButton("\(actionVerb) \(selected)", systemImage: "figure.run", kind: .primary) {
                     onStart(selected)
                     dismiss()
                 }
-                .accessibilityLabel("Start \(selected)")
+                .accessibilityLabel("\(actionVerb) \(selected)")
             }
         }
         .padding(NoopMetrics.space6)

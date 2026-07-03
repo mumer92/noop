@@ -43,7 +43,11 @@ struct CoachView: View {
 
     var body: some View {
         ScreenScaffold(title: "Coach",
-                       subtitle: "Ask about your charge, effort, rest and workouts, grounded in your own numbers.") {
+                       subtitle: "Ask about your charge, effort, rest and workouts, grounded in your own numbers.",
+                       // Liquid finish: the same full-bleed day-of-sky backdrop Today + the other liquid
+                       // tabs carry, so Coach sits in one atmosphere. Static + non-interactive; the frosted
+                       // message/setup cards below sit on the opaque canvas and stay legible.
+                       topBackground: liquidScaffoldSky()) {
             if coach.isConfigured {
                 connectedHeader
                 consentBar
@@ -511,7 +515,9 @@ struct CoachView: View {
                             .background(StrandPalette.surfaceInset, in: Capsule(style: .continuous))
                             .overlay(Capsule(style: .continuous).strokeBorder(StrandPalette.hairline, lineWidth: 1))
                     }
-                    .buttonStyle(.plain)
+                    // Liquid tap response: the physical settle-inward every tappable liquid
+                    // affordance gets, replacing the flat `.plain` press.
+                    .buttonStyle(LiquidPressStyle())
                     .disabled(coach.sending)
                     .accessibilityLabel("Suggested prompt: \(prompt)")
                 }

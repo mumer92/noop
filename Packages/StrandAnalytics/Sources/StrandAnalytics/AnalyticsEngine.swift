@@ -98,6 +98,13 @@ public enum AnalyticsEngine {
         /// session with too little gravity to grid is OMITTED (no key), so the caller never persists a
         /// fabricated zero series. (H8)
         public let sessionMotionByStart: [Int: [Double]]
+        /// Per-session per-epoch BAND sleep_state (#175), keyed by each matched session's detected start,
+        /// on the same 30 s grid as `stagesJSON` / `sessionMotionByStart`. The strap's OWN @81 code
+        /// (0 wake/1 still/2 asleep/3 up) gridded per session, for the caller to persist via
+        /// `WhoopStore.persistSessionSleepState`. A session with no band-state samples is OMITTED (no key),
+        /// so the caller persists NULL there rather than a fabricated array. Feeds the H7 re-onset CONFIRM
+        /// guard on the NEXT pass; never overrides the derived hypnogram. Empty on a WHOOP 4.0. (#175)
+        public let sessionSleepStateByStart: [Int: [Int]]
 
         public init(daily: DailyMetric, sleepSessions: [SleepSession],
                     cachedSleep: [CachedSleepSession], workouts: [ExerciseSession],
@@ -107,6 +114,7 @@ public enum AnalyticsEngine {
                     effortConfidence: ScoreConfidence = .calibrating,
                     restConfidence: ScoreConfidence = .calibrating,
                     sessionMotionByStart: [Int: [Double]] = [:],
+                    sessionSleepStateByStart: [Int: [Int]] = [:],
                     chargeDrivers: [ChargeDriver] = [],
                     skinTempRelative: SkinTempRelative? = nil) {
             self.daily = daily; self.sleepSessions = sleepSessions
@@ -120,6 +128,7 @@ public enum AnalyticsEngine {
             self.effortConfidence = effortConfidence
             self.restConfidence = restConfidence
             self.sessionMotionByStart = sessionMotionByStart
+            self.sessionSleepStateByStart = sessionSleepStateByStart
         }
     }
 
@@ -208,6 +217,12 @@ public enum AnalyticsEngine {
                                   // baseline from these means across nights and re-derives
                                   // skinTempDevC in pass 2 (same two-pass shape as avgHrv→recovery).
                                   skinTemp: [SkinTempSample] = [],
+                                  // Device family that wrote `skinTemp`, so the raw→°C conversion picks
+                                  // the right scale (#938): 5/MG banks CENTIDEGREES (raw/100), the WHOOP
+                                  // 4.0 v24 field is a RAW ADC on a different scale. Default `.whoop5`
+                                  // keeps every 5/MG + pure-function caller byte-identical;
+                                  // IntelligenceEngine passes the day owner's real family.
+                                  skinTempFamily: DeviceFamily = .whoop5,
                                   profile: UserProfile,
                                   baselines: ProfileBaselines = ProfileBaselines(),
                                   maxHROverride: Double? = nil,
@@ -405,7 +420,7 @@ public enum AnalyticsEngine {
         // personal baseline. In pass 1 baselines.skinTemp is nil so the deviation is nil
         // and the mean is harvested; IntelligenceEngine seeds the baseline from those means
         // and re-derives the deviation in pass 2 (mirrors avgHrv→recovery). APPROXIMATE.
-        let nightlySkinTempC = wornNightlySkinTempC(matched, hr: hr, skinTemp: skinTemp)
+        let nightlySkinTempC = wornNightlySkinTempC(matched, hr: hr, skinTemp: skinTemp, family: skinTempFamily)
         let skinTempDevC: Double? = nightlySkinTempC.flatMap { (v: Double) -> Double? in
             guard let b = baselines.skinTemp, b.usable else { return nil }
             return round2(Baselines.deviation(v, state: b).delta)
@@ -558,6 +573,22 @@ public enum AnalyticsEngine {
             if !motion.isEmpty { sessionMotionByStart[s.start] = motion }
         }
 
+        // ── Per-session per-epoch BAND sleep_state (#175) ─────────────────────
+        // Grid the strap's OWN band sleep_state (the SAME `bandSleepState` samples the H7 guard consumes)
+        // onto each matched session's 30 s epochs, for the caller to persist beside `stagesJSON`. This is
+        // the source the band-state chain lacked (persist → next pass's H7 re-onset CONFIRM). A session
+        // whose window carries no band samples is omitted (no key) → the caller persists NULL, an absent
+        // signal stays absent. Empty on a WHOOP 4.0 (no band_sleep_state stream). The band code is carried
+        // verbatim; it NEVER overrides the derived hypnogram, only confirms a borderline morning re-onset.
+        var sessionSleepStateByStart: [Int: [Int]] = [:]
+        if !bandSleepState.isEmpty {
+            for s in matched {
+                let states = SleepStager.sessionEpochSleepState(start: s.start, end: s.end,
+                                                                sleepState: bandSleepState)
+                if !states.isEmpty { sessionSleepStateByStart[s.start] = states }
+            }
+        }
+
         // ── Per-score confidence tiers ────────────────────────────────────────
         let chargeConfidence = ScoreConfidence.charge(recovery: recovery, hrvBaseline: baselines.hrv)
         let effortConfidence = ScoreConfidence.effort(strain: strain, hrSampleCount: hr.count)
@@ -577,6 +608,7 @@ public enum AnalyticsEngine {
                          effortConfidence: effortConfidence,
                          restConfidence: restConfidence,
                          sessionMotionByStart: sessionMotionByStart,
+                         sessionSleepStateByStart: sessionSleepStateByStart,
                          chargeDrivers: chargeDrivers,
                          skinTempRelative: skinTempRelative)
     }
@@ -688,18 +720,22 @@ public enum AnalyticsEngine {
     /// samples. A sample counts when (a) its timestamp falls inside a detected in-bed `sessions`
     /// span, (b) a concurrent HR sample reads a worn, alive BPM (the strap streams HR only
     /// on-wrist), and (c) the value is in the plausible worn range — so an on-charger interval
-    /// drifting to ambient can't poison the nightly mean. °C = raw/100 — the firmware stores
-    /// CENTIDEGREES in skin_temp_raw@73, not the AS6221's native 1/128 register units: the real
-    /// captures in Whoop5HistoricalTests read worn=3057 / off-wrist=2247, which under /100 are
-    /// 30.6 °C skin and 22.5 °C room ambient (physically right on both ends) but under /128 are
-    /// 23.9 °C and 17.6 °C — "skin" colder than any live wrist, and below the 28 °C worn gate, so
-    /// /128 silently dropped every real night (PR #97 review, tigercraft4; user report #166).
-    /// Matches the Android decoder's /100 for the same register. All values APPROXIMATE.
+    /// drifting to ambient can't poison the nightly mean.
+    ///
+    /// The raw→°C conversion is DEVICE-FAMILY-AWARE (#938): 5/MG stores CENTIDEGREES in
+    /// skin_temp_raw@73 (°C = raw/100 — the Whoop5HistoricalTests captures read worn 3057 = 30.6 °C /
+    /// off-wrist 2247 = 22.5 °C, physically right on both ends), but the WHOOP 4.0 v24 field@72 is a
+    /// RAW ADC on a different scale — running it through /100 read every worn 4.0 night ~8 °C, below
+    /// the 28 °C worn gate, so kept=0 and skin temp + the illness signal vanished (issue #938). The
+    /// shared `skinTempCelsius(raw:family:)` (WhoopProtocol) picks the right scale; `family` defaults
+    /// to `.whoop5` so every existing 5/MG + pure-function caller is byte-identical. All values
+    /// APPROXIMATE.
     static func wornNightlySkinTempC(_ sessions: [SleepSession],
                                      hr: [HRSample],
                                      skinTemp: [SkinTempSample],
+                                     family: DeviceFamily = .whoop5,
                                      minSamples: Int = minSkinTempSamples) -> Double? {
-        skinTempFunnel(sessions, hr: hr, skinTemp: skinTemp, minSamples: minSamples).mean
+        skinTempFunnel(sessions, hr: hr, skinTemp: skinTemp, family: family, minSamples: minSamples).mean
     }
 
     // MARK: - Skin-temp funnel diagnostic (#752)
@@ -761,6 +797,7 @@ public enum AnalyticsEngine {
     public static func skinTempFunnel(_ sessions: [SleepSession],
                                       hr: [HRSample],
                                       skinTemp: [SkinTempSample],
+                                      family: DeviceFamily = .whoop5,
                                       minSamples: Int = minSkinTempSamples) -> SkinTempFunnelDiagnostic {
         let total = skinTemp.count
         // No sessions ⇒ every sample is out of window; no samples ⇒ an empty funnel. Either way the mean is
@@ -778,7 +815,7 @@ public enum AnalyticsEngine {
         for t in skinTemp {
             if !wornSeconds.contains(t.ts) { notWorn += 1; continue }
             if !sessions.contains(where: { t.ts >= $0.start && t.ts <= $0.end }) { outOfWindow += 1; continue }
-            let c = Double(t.raw) / 100.0
+            let c = skinTempCelsius(raw: t.raw, family: family)   // #938: family-aware (5/MG=raw/100, 4.0=raw ADC map)
             if c < skinTempMinC || c > skinTempMaxC { outOfRange += 1; continue }
             sum += c
             kept += 1

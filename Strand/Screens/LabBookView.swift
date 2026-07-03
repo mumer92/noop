@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import UniformTypeIdentifiers
 import StrandDesign
 import StrandImport
 import StrandAnalytics
@@ -29,6 +30,7 @@ import WhoopStore
 
 struct LabBookView: View {
     @EnvironmentObject var repo: Repository
+    @EnvironmentObject var live: LiveState
 
     /// All readings, grouped + ordered for display. Loaded off the store on appear/refresh.
     @State private var markers: [LabMarkerRow] = []
@@ -41,6 +43,12 @@ struct LabBookView: View {
     /// Whether the first-use disclaimer sheet is open.
     @State private var showingDisclaimer = false
 
+    // Markers CSV import (LabMarkerCsvImport, Phase 2).
+    @State private var showingCsvImporter = false   // macOS .fileImporter presentation
+    @State private var csvImporting = false
+    @State private var csvSummary: String?
+    @State private var csvFailed = false
+
     var body: some View {
         ScreenScaffold(
             title: "Lab Book",
@@ -50,7 +58,10 @@ struct LabBookView: View {
             // each carrying its own sparkline-bearing cards. The LazyVStack path builds the off-screen
             // categories on demand — byte-identical layout — so a logbook with many categories doesn't
             // render every section + sparkline up-front.
-            lazy: true
+            lazy: true,
+            // Liquid finish: the day-of-sky backdrop, so Lab Book sits in the same liquid atmosphere as
+            // Today and the other analysis screens.
+            topBackground: liquidScaffoldSky()
         ) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                 headerCard
@@ -80,6 +91,18 @@ struct LabBookView: View {
         }
         .sheet(isPresented: $showingDisclaimer) {
             LabBookDisclaimerView()
+        }
+        // macOS picker for the markers CSV; iOS goes through DocumentPicker (see
+        // presentCsvImporter) for the iCloud download-on-pick behaviour (#179).
+        .fileImporter(isPresented: $showingCsvImporter,
+                      allowedContentTypes: [.commaSeparatedText, .plainText],
+                      allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first { importMarkersCsv(url: url) }
+            case .failure(let error):
+                NSLog("Import: markers CSV picker failed - \(error.localizedDescription)")
+            }
         }
     }
 
@@ -136,11 +159,13 @@ struct LabBookView: View {
         }
     }
 
-    // MARK: - Import entry (reuses the Data Sources import-card idiom)
+    // MARK: - Import entry (the Phase-2 markers CSV importer, LabMarkerCsvImport)
     //
-    // The cross-platform floor is manual entry (above). A bulk "Markers CSV" import is a Phase-2
-    // engine (LabMarkerCsvImport, spec §"Phasing"); until it lands the card honestly points the
-    // user at Data Sources, where every file importer lives, rather than fabricating a flow.
+    // The cross-platform floor is manual entry (above). The bulk markers CSV import is the
+    // Phase-2 engine (LabMarkerCsvImport, spec §"Phasing"): (date, marker, value, unit) rows
+    // with tolerant headers, catalog + custom marker mapping, and skip-and-count on anything
+    // unreadable. The picker follows the Data Sources idiom (DocumentPicker on iOS,
+    // .fileImporter on macOS).
 
     private var importCard: some View {
         NoopCard(padding: 18, tint: StrandPalette.metricAmber) {
@@ -154,14 +179,125 @@ struct LabBookView: View {
                         .accessibilityHidden(true)
                     Text("Import readings").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
                     Spacer(minLength: 8)
-                    StatePill("Coming soon", tone: .neutral, showsDot: false)
                 }
-                Text("A bulk markers CSV import (date, marker, value, unit) lands with the file importers in Data Sources, same as nutrition and lifting. For now, add readings one at a time above. Everything you import stays on \(Platform.deviceNounPhrase).")
+                Text("Bring in a markers CSV (date, marker, value, unit). Names that match the catalog fold onto your existing markers; anything else comes in as a custom marker. Rows that can't be read are skipped and counted, never guessed. Everything you import stays on \(Platform.deviceNounPhrase).")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Button {
+                        presentCsvImporter()
+                    } label: {
+                        Label(csvImporting ? "Importing…" : "Choose CSV…", systemImage: "tray.and.arrow.down")
+                    }
+                    .buttonStyle(.noopPrimary)
+                    .disabled(csvImporting)
+                    .accessibilityLabel("Choose a markers CSV file to import")
+                    if csvImporting { ProgressView().controlSize(.small) }
+                }
+                if let s = csvSummary {
+                    Text(s).font(StrandFont.subhead)
+                        .foregroundStyle(csvFailed ? StrandPalette.statusWarning : StrandPalette.statusPositive)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
+    }
+
+    private func presentCsvImporter() {
+        #if os(iOS)
+        // iOS: UIDocumentPickerViewController with asCopy:true (DocumentPicker) so an
+        // undownloaded iCloud file is fetched and handed over readable (#179).
+        Task {
+            guard let url = await DocumentPicker.importFile([.commaSeparatedText, .plainText]) else { return } // cancelled
+            importMarkersCsv(url: url)
+        }
+        #else
+        showingCsvImporter = true
+        #endif
+    }
+
+    /// Parse a markers CSV (LabMarkerCsvImport) and upsert the readings into the Lab Book
+    /// under this device id with the `lab-csv` provenance tag; the daily `lab-book`
+    /// projection rides the store's upsert, then a refresh lets Compare/Explore/Coach see
+    /// the new markers.
+    private func importMarkersCsv(url: URL) {
+        csvImporting = true
+        csvSummary = nil
+        csvFailed = false
+        Task {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let data = try Data(contentsOf: url)
+                let result = LabMarkerCsvImport.parse(data: data)
+                guard !result.fileTooLarge else {
+                    csvSummary = String(localized: "That file is too large for a markers CSV import.")
+                    csvFailed = true
+                    csvImporting = false
+                    return
+                }
+                guard result.importedReadings > 0 else {
+                    csvSummary = String(localized: "No usable rows found. Check the file has date, marker and value columns.")
+                    csvFailed = true
+                    logImport("Lab Book CSV: no usable rows (\(result.skippedRows) skipped)")
+                    csvImporting = false
+                    return
+                }
+                guard let store = await repo.storeHandle() else {
+                    csvSummary = String(localized: "Couldn't open the local store.")
+                    csvFailed = true
+                    csvImporting = false
+                    return
+                }
+                let rows = result.rows.map { r -> LabMarkerRow in
+                    // Local noon of the row's literal day: deterministic, so re-importing
+                    // the same file updates in place (natural key
+                    // deviceId+markerKey+takenAt+source) instead of duplicating.
+                    let epoch = LabBookFormat.noonEpoch(r.day)
+                    return LabMarkerRow(
+                        id: "\(r.markerKey)-\(epoch)-\(UUID().uuidString.prefix(8))",
+                        deviceId: repo.deviceId,
+                        markerKey: r.markerKey,
+                        category: r.category.rawValue,
+                        day: r.day,
+                        takenAt: epoch,
+                        value: r.value,
+                        valueText: nil,
+                        unit: r.unit,
+                        source: LabMarkerCsvImport.sourceId,
+                        note: nil,
+                        referenceText: nil
+                    )
+                }
+                try await store.upsertLabMarkers(rows)
+                await repo.refresh()   // re-resolves the lab-book projection into Compare/Explore/Coach
+                await load()
+                var msg = String(localized: "Imported \(result.importedReadings) readings (\(result.distinctMarkers) markers)")
+                if let a = result.earliestDay, let b = result.latestDay, a != b { msg += " · \(a)-\(b)" }
+                if result.skippedRows > 0 {
+                    // Whole-phrase variants per count; the separator stays outside the localized key.
+                    msg += " · " + (result.skippedRows == 1
+                                    ? String(localized: "1 row skipped")
+                                    : String(localized: "\(result.skippedRows) rows skipped"))
+                }
+                csvSummary = msg
+                csvFailed = false
+                logImport("Lab Book CSV: \(result.importedReadings) readings, \(result.distinctMarkers) markers, \(result.skippedRows) rejected")
+            } catch {
+                csvSummary = String(localized: "Import failed: \(error.localizedDescription)")
+                csvFailed = true
+                logImport("Lab Book CSV failed: \(error.localizedDescription)")
+            }
+            csvImporting = false
+        }
+    }
+
+    /// One privacy-safe line into the SAME exported strap log the other importers use
+    /// (issue #421 parity): COUNTS only, never a file name, a path, or any health value.
+    /// Same shape as DataSourcesView.logImport.
+    private func logImport(_ line: String) {
+        live.append(log: "[\(AppModel.logTimeFormatter.string(from: Date()))] Import \(line)")
     }
 
     // MARK: - Empty state (honest)
@@ -251,7 +387,9 @@ struct LabBookView: View {
                 }
             }
         }
-        .buttonStyle(.plain)
+        // Liquid press language: the settle-inward LiquidPressStyle the Today / batch-1 rows use, so
+        // opening a marker's detail feels physical (replaces the flat .plain style).
+        .buttonStyle(LiquidPressStyle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(displayName(for: key)), latest \(latestLabel(latest, key: key)), \(series.count) readings")
     }
@@ -377,6 +515,24 @@ enum LabBookFormat {
         dayFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(epoch)))
     }
 
+    /// "12 Jun 2026" rendered from a stored `yyyy-MM-dd` day string, LOCATION-INDEPENDENTLY: the day key
+    /// is parsed in UTC and reformatted in UTC, so the history date never shifts with the device zone the
+    /// way `day(takenAt)` (a local render of a stored instant) can near midnight. Falls back to the raw
+    /// string if it doesn't parse.
+    static func dayFromKey(_ day: String) -> String {
+        guard let date = utcKeyFormatter.date(from: day) else { return day }
+        return utcDayFormatter.string(from: date)
+    }
+
+    /// "d MMM yyyy" pinned to UTC, paired with `utcKeyFormatter` so `dayFromKey` round-trips a UTC day.
+    private static let utcDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "d MMM yyyy"
+        return f
+    }()
+
     /// The `yyyy-MM-dd` day key the projection uses (LOCAL day of the reading).
     private static let keyFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -385,6 +541,28 @@ enum LabBookFormat {
         return f
     }()
     static func dayKey(_ date: Date) -> String { keyFormatter.string(from: date) }
+
+    /// A `yyyy-MM-dd` parser PINNED to UTC, so a day string always maps to the same instant regardless
+    /// of the device zone. The local-zone `keyFormatter` above returns nil for a day whose LOCAL midnight
+    /// is skipped by a DST transition (e.g. Chile/Cuba, 06 Sep) - which used to collapse `noonEpoch` to
+    /// epoch 0 and collide different days on the natural key. UTC never skips midnight.
+    private static let utcKeyFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    /// Epoch seconds of UTC noon on a `yyyy-MM-dd` day — the deterministic, LOCATION-INDEPENDENT `takenAt`
+    /// for CSV-imported readings, so re-importing the same file (even after travel to another zone) upserts
+    /// in place instead of minting a duplicate (natural key deviceId+markerKey+takenAt+source). Pinned to
+    /// UTC so a DST-skipped local midnight can never collapse the key to epoch 0. 0 only for a genuinely
+    /// unparseable day string. History dates render from the stored `day` string, not this takenAt.
+    static func noonEpoch(_ day: String) -> Int {
+        guard let midnight = utcKeyFormatter.date(from: day) else { return 0 }
+        return Int(midnight.timeIntervalSince1970) + 12 * 3600
+    }
 }
 
 // MARK: - Marker detail (history + trend + "compare with a signal")
@@ -594,6 +772,12 @@ private struct MarkerDetailView: View {
         let tint = LabBookSignals.correlationColor(c.r)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
+                // A small liquid vessel posed at the association STRENGTH (|r|, a neutral 0–1 statistical
+                // magnitude — never a clinical value), tinted by the relationship's own colour. Matches
+                // Compare's pair card. Decorative — the r read-out + sentence carry the meaning.
+                LiquidVessel(value: min(abs(c.r), 1), tint: tint, animated: false)
+                    .frame(width: 30, height: 30)
+                    .accessibilityHidden(true)
                 Text("\(displayName) ↔ \(signal?.title ?? "")")
                     .font(StrandFont.headline)
                     .foregroundStyle(StrandPalette.textPrimary)
@@ -610,6 +794,10 @@ private struct MarkerDetailView: View {
                 .font(StrandFont.subhead)
                 .foregroundStyle(StrandPalette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // The association strength as a liquid tube (the horizontal magnitude idiom), reading |r|
+            // from no link (0) to a perfect one (1). Decorative and non-clinical.
+            LiquidTube(frac: min(abs(c.r), 1), tint: tint, height: 8, animated: false)
+                .accessibilityHidden(true)
             // The mandatory clause for markers (spec §"On-device algorithm").
             Text("\(n) readings used · \(LabBookSignals.strengthWord(c.r)) \(LabBookSignals.directionWord(c.r)) association. This is your own data sitting side by side. It's not a medical finding, and it shows association, not cause.")
                 .font(StrandFont.footnote)
@@ -644,7 +832,7 @@ private struct MarkerDetailView: View {
                 Text(valueLabel(row))
                     .font(StrandFont.number(16))
                     .foregroundStyle(StrandPalette.textPrimary)
-                Text(LabBookFormat.day(row.takenAt))
+                Text(LabBookFormat.dayFromKey(row.day))
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                 if let note = row.note, !note.isEmpty {
@@ -838,6 +1026,7 @@ private func labBookPreviewRepo() -> Repository {
 #Preview("Lab Book") {
     LabBookView()
         .environmentObject(labBookPreviewRepo())
+        .environmentObject(LiveState())
         .frame(width: 920, height: 860)
         .preferredColorScheme(.dark)
 }

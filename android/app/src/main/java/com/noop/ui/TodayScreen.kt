@@ -25,8 +25,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsRun
 import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
@@ -34,6 +34,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Air
+import androidx.compose.material.icons.filled.BatteryUnknown
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
@@ -43,11 +44,9 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -74,15 +73,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
@@ -97,6 +95,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -108,6 +107,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import android.app.DatePickerDialog
+import android.view.HapticFeedbackConstants
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.noop.analytics.BaselineState
 import com.noop.analytics.Baselines
@@ -132,9 +132,7 @@ import com.noop.ingest.HealthConnectImporter
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.chrono.IsoChronology
 import java.time.format.DateTimeFormatter
-import java.time.format.DateTimeFormatterBuilder
 import java.time.format.FormatStyle
 import java.time.temporal.ChronoUnit
 import java.util.Calendar
@@ -161,6 +159,11 @@ private const val CARD_NEW_HERE = "newHere"
 // the other Today info-cards, so a returning user who has read it once isn't nagged with it every day
 // through the multi-night calibration window. Same id on both platforms so it round-trips an export/import.
 private const val CARD_CALIBRATING = "calibratingBaseline"
+// The "Latest sleep · <date>" / "Last night · <date>" carry-over note (ScoreState.CarriedLastNight). iOS
+// has nothing in this slot, so on Android it's dismissible-into-the-inbox like the other Today info-cards:
+// a small × tucks it into Updates (restorable), so it never sits permanently between the header and the
+// hero throwing off the compact liquid look. Local-only id (iOS has no twin), matching the dismiss plumbing.
+private const val CARD_CARRIED_SLEEP = "carriedSleep"
 
 /** #860 item 1: process-lifetime guard for the launch snap-to-today. `selectedDayOffset` is rememberSaveable
  *  so a tab-away keeps the user's chosen day (#614/#739). The same persistence, however, rides the
@@ -172,6 +175,19 @@ private const val CARD_CALIBRATING = "calibratingBaseline"
  *  behaviour untouched. iOS parity: TodayView's selectedDayOffset is plain @State, which is never persisted
  *  and so already re-inits to 0 on every fresh launch, reaching the same offset through the same helper. */
 private var todayDidSnapToTodayThisLaunch = false
+
+// MARK: - Liquid hero tokens (the liquid Today restyle)
+//
+// The hero card the score vessels float on, ported from the iOS LiquidTodayView. `heroFill` is a
+// translucent near-black (mock rgba(13,14,20,.80)) so it floats over the day-of-sky; the vessels + white
+// count-up numbers read crisp on it. Radius 26 + a white@0.11 hairline give the frosted-glass edge.
+private val LIQUID_HERO_FILL: Color = Color(red = 13f / 255f, green = 14f / 255f, blue = 20f / 255f, alpha = 0.80f)
+private val LIQUID_HERO_RADIUS: Dp = 26.dp
+
+// The Vitality vessel purple (#9b7bff) — no exact Palette token in this theme, so a fixed brand literal
+// matching the iOS liquid Today's `liquidPurple` (Color(.sRGB, red:0x9b, green:0x7b, blue:0xff)). Used by
+// the mini "Your cards" vessel so Vitality reads the same purple as iOS.
+private val LIQUID_PURPLE: Color = Color(red = 0x9b / 255f, green = 0x7b / 255f, blue = 0xff / 255f, alpha = 1f)
 
 /**
  * The minimal, stable slice of the BLE [com.noop.ble.LiveState] the Today top-level body reads. Pulled out
@@ -207,15 +223,26 @@ fun TodayScreen(
     onOpenSettings: () -> Unit = {},
     onOpenHydration: () -> Unit = {},
     // #706/#684: the "Your cards" dashboard rows are tappable on iOS but only Hydration navigated on Android.
-    // These push each card's detail (Stress card -> Stress; the overnight vitals + Fitness age / Vitality ->
-    // Health; Sleep -> Sleep), matching the iOS pinnedCardRow destinations. Defaulted to no-ops so the call
-    // site stays compiling; AppRoot binds them to nav.navigate(...) like onOpenHydration.
+    // These push each card's detail (Stress card -> Stress; Sleep -> Sleep), matching the iOS pinnedCardRow
+    // destinations. Defaulted to no-ops so the call site stays compiling; AppRoot binds them to nav.navigate(...)
+    // like onOpenHydration.
     onOpenStress: () -> Unit = {},
     onOpenHealth: () -> Unit = {},
+    // Every metric/vital card (HRV, Resting HR, Respiratory, SpO₂, Skin Temp, Fitness age, Vitality, Steps,
+    // Calories) opens ITS OWN focused detail trend, not the shared Health hub (2026-07-03: cards were
+    // wrongly dumping into the Health monitor). Mirrors the iOS liquidCard `metricDetail(key)`. Takes the
+    // vital_detail key; defaults to the Health screen so an unbound caller keeps the old behaviour.
+    onOpenMetric: (String) -> Unit = { onOpenHealth() },
     onOpenSleep: () -> Unit = {},
+    // Optional Coupled view card (task #43): a tap-through to the WHOOP-style day screen. Defaulted to a
+    // no-op so the call site stays compiling; AppRoot binds it to nav.navigate(CoupledView).
+    onOpenCoupled: () -> Unit = {},
     // The "workout in progress" indicator card routes to Live and re-opens the in-exercise overlay. Defaulted
     // to a no-op so the call site stays compiling; AppRoot binds it to openActiveWorkout() + nav.navigate(Live).
     onOpenActiveWorkout: () -> Unit = {},
+    // The liquid header battery ring taps through to Devices (iOS parity: the battery ring → router.openDevices()).
+    // Defaulted to fall back to Settings so the call site stays compiling; AppRoot binds it to the Devices route.
+    onOpenDevices: () -> Unit = onOpenSettings,
 ) {
     val today by viewModel.today.collectAsStateWithLifecycle()
     val alert by viewModel.healthAlert.collectAsStateWithLifecycle()
@@ -512,6 +539,11 @@ fun TodayScreen(
     var calibratingDismissed by remember {
         mutableStateOf(TodayCardDismissal.isDismissed(context, CARD_CALIBRATING))
     }
+    // The carried "Latest sleep · <date>" note's dismissed flag (iOS has no such card; on Android it's
+    // dismissible so it doesn't sit permanently above the hero and break the compact look). Read once.
+    var carriedSleepDismissed by remember {
+        mutableStateOf(TodayCardDismissal.isDismissed(context, CARD_CARRIED_SLEEP))
+    }
     // Dismiss a Today info-card INTO the inbox: persist its flag, hide it, and post a restorable
     // `.dismissedCard` update carrying the card id. Mirrors the iOS `dismissTodayCard`.
     val dismissTodayCard: (String, String, String) -> Unit = { id, title, message ->
@@ -520,6 +552,7 @@ fun TodayScreen(
             CARD_SCORES_BUILDING -> scoresBuildingDismissed = true
             CARD_NEW_HERE -> newHereDismissed = true
             CARD_CALIBRATING -> calibratingDismissed = true
+            CARD_CARRIED_SLEEP -> carriedSleepDismissed = true
         }
         updateStore?.post(
             UpdateItem(
@@ -540,6 +573,7 @@ fun TodayScreen(
                 CARD_SCORES_BUILDING -> scoresBuildingDismissed = false
                 CARD_NEW_HERE -> newHereDismissed = false
                 CARD_CALIBRATING -> calibratingDismissed = false
+                CARD_CARRIED_SLEEP -> carriedSleepDismissed = false
             }
             updateStore.restoreRequest = null
         }
@@ -877,57 +911,69 @@ fun TodayScreen(
         // Tighten the top inset now the big title is gone (Compose forbids negative padding, so this
         // expresses iOS's `.padding(top: -16)` as a smaller scaffold top padding).
         topPadding = 12.dp,
-        // SCREEN-level day-cycle scene backdrop (iOS parity): the current hour's illustration sits behind
-        // the WHOLE top region, the TodayTopBar AND the rings hero, full-bleed (full-width, up behind the
-        // status bar), top-aligned, fading into the flat canvas over its lower portion, with a faint top
-        // dark scrim so the white header text stays legible. The cards float OVER it on the flat canvas
-        // below. Replaces the in-card hero scene (removed from the hero Box below). Mirrors iOS TodayView
-        // passing `topBackground: AnyView(SceneScreenBackground())`. No glow.
+        // FIX 6 (compactness): the liquid Today matches the iOS Today's tight `VStack(spacing: 12)` section
+        // rhythm rather than the app-wide 20dp row gap, so the whole screen reads as compact/slick as iOS.
+        // Scoped to this scaffold — no other screen's rhythm changes.
+        rowSpacing = 12.dp,
+        // LIQUID SKY BACKDROP (the pilot pattern — LiquidScreenSky.kt): the time-of-day liquid sky sits
+        // behind the WHOLE top region, the liquid header + wordmark AND the hero vessels, full-bleed (full-width, up
+        // behind the status bar via the scaffold's topBackground plumbing), top-aligned, settling into the
+        // flat canvas over its lower half so the cards float OVER it on the theme surface. This is the
+        // Android equivalent of the iOS `ScreenScaffold(topBackground: liquidScaffoldSky())`: it replaces
+        // the classic day-cycle SceneScreenBackground with the liquid day-of-sky (LiquidSkyStatic — no
+        // per-frame cost on this scroll-heavy screen). The other liquid screens drop in the SAME
+        // LiquidScreenSky() slot verbatim.
         // #698, gated on the "Day-cycle background" setting (default ON). Off passes null, so the scaffold
         // paints the plain dark surface canvas instead, mirroring iOS's `showDayCycleBackground ? ... : nil`.
-        topBackground = if (showDayCycleBackground) { { SceneScreenBackground() } } else null,
+        topBackground = if (showDayCycleBackground) { { LiquidScreenSky() } } else null,
     ) {
-        // The header recording-status (COMPONENT 3) the top-bar light reflects: Recording while the strap
-        // is connected and a live HR is streaming, else "Last synced Xm ago" from the last offload, else
-        // "Not recording". Today only, a past day isn't "recording", so the light is omitted then.
-        // #580, a connected WHOOP 5/MG streaming live HR but offloading no history reads "Connected"
-        // (history sync experimental on 5.0), overriding the honest resolver. Mirrors Swift `recordingState`.
         item {
-        val headerRecordingState: RecordingState? = if (selectedDayOffset == 0) {
-            if (liveSnap.connected && liveSnap.historySyncExperimental) {
-                RecordingState.HistoryExperimental
-            } else {
-                recordingStateFor(
-                    connected = liveSnap.connected,
-                    // `recordingStateFor` only checks liveHeartRate for nullness (is a stream present), so
-                    // the streaming boolean is sufficient and keeps the per-second bpm tick out of this body.
-                    liveHeartRate = if (liveSnap.hrStreaming) 1 else null,
-                    lastSyncAtSec = liveSnap.lastSyncAt,
-                    nowSec = System.currentTimeMillis() / 1000,
-                )
+        // LIQUID Today header (iOS LiquidTodayView.scene parity), a full structural rebuild to mirror the
+        // iOS liquid Today element-for-element (NOT the old numeric-date + recording-light + bell header):
+        //   LEFT  — a tappable title block: the big rounded-bold day title ("Today" / "Yesterday" / the
+        //           weekday) over a human date line ("Friday, 3 July"). Tap opens the day picker.
+        //   RIGHT — exactly the iOS four controls, in order: a filled HEART (→ Support), the PROFILE
+        //           AVATAR (→ Settings), a "+" ADD button (→ quick actions), and the strap BATTERY RING.
+        // The recording-status light and the notifications BELL are GONE from the header (iOS has neither);
+        // the Updates inbox is relocated into the "+" quick-actions sheet (AppRoot), so the feature stays one
+        // tap away without sitting in the Today header. Staggered in as the first section (index 0).
+        val dayTitle = when (selectedDayOffset) {
+            0 -> "Today"
+            1 -> "Yesterday"
+            else -> {
+                val keyDate = runCatching { LocalDate.parse(selectedDayKey) }.getOrNull() ?: selectedDay
+                keyDate.format(DateTimeFormatter.ofPattern("EEEE", Locale.US))
             }
-        } else {
-            null
         }
-
-        // Apple-style large-title top bar (iOS TodayView.todayTopBar parity): a tappable "Today ⌄" big
-        // title + full date on the LEFT (taps to change day), then a row of UNIFORM 36dp circular icons on
-        // the RIGHT, a recording-status light, the updates bell, the gold quick-add (+), and the
-        // menu/settings avatar. Plain header (no atmosphere card): the day-cycle scene now backs the rings
-        // hero below, mirroring iOS. Staggered in as the first section (index 0).
+        // Human date line under the title — "Friday, 3 July" (weekday + day + month), NOT a numeric date.
+        // Dated by the row ACTUALLY on screen (selectedDayKey follows the resolver at offset 0), matching
+        // the iOS `dateLine` (EEEE, d MMMM). Mirrors iOS's date-under-title block.
+        val humanDate = run {
+            val keyDate = runCatching { LocalDate.parse(selectedDayKey) }.getOrNull() ?: selectedDay
+            keyDate.format(DateTimeFormatter.ofPattern("EEEE, d MMMM", Locale.US))
+        }
         Box(modifier = Modifier.fillMaxWidth().staggeredAppear(0)) {
-            TodayTopBar(
-                dateText = dayNavNumericDate(selectedDay),
+            LiquidTodayHeader(
+                dayTitle = dayTitle,
+                humanDate = humanDate,
                 selectedDay = selectedDay,
-                recordingState = headerRecordingState,
+                batteryPct = if (liveSnap.connected) liveSnap.batteryPct else null,
                 onPickDay = { offset -> selectedDayOffset = offset },
-                updateStore = updateStore,
-                onOpenUpdates = onOpenUpdates,
+                onSupport = onSupport,
                 onQuickActions = onQuickActions,
                 onOpenSettings = onOpenSettings,
-                onRecordingTap = onOpenSettings,
+                onOpenDevices = onOpenDevices,
             )
         }
+        }
+
+        // WORDMARK, a subtle centred "N O O P" on the sky between the header and the hero (iOS LiquidWordmark
+        // parity). White @ ~50% opacity, letter-spaced, perfectly centred; a tap plays a small random wiggle
+        // easter egg. The old Android Today had NO wordmark; this adds it. Staggered in just after the header.
+        item {
+            Box(modifier = Modifier.fillMaxWidth().staggeredAppear(0)) {
+                LiquidWordmark()
+            }
         }
 
         // A "workout in progress" indicator whenever a manual workout is active (iOS parity: the Today
@@ -957,14 +1003,30 @@ fun TodayScreen(
             // the hero with NO in-ring caption, so its "Last night ..." note renders BELOW the rings here,
             // matching iOS explainedScoreNote. Today only; never a fabricated value.
             //
-            // #827: CarriedLastNight + NeedsStrap ALWAYS show. They're either a today-blocking state or a
-            // one-off carry-over, not a recurring nag. The Calibrating note, by contrast, repeats for several
-            // consecutive nights, so it gets a × that tucks it into the Updates inbox (restorable from there),
-            // and is rendered separately just below so a returning user isn't shown it every single day.
-            if (selectedDayOffset == 0 &&
-                (scoreState is ScoreState.CarriedLastNight || scoreState is ScoreState.NeedsStrap)
-            ) {
+            // #827: NeedsStrap ALWAYS shows (a today-blocking state, not a recurring nag).
+            if (selectedDayOffset == 0 && scoreState is ScoreState.NeedsStrap) {
                 ScoreStateNote(scoreState)
+            }
+            // The carried "Latest sleep · <date>" / "Last night · <date>" note. iOS has NOTHING in this slot,
+            // and the maintainer flagged it as breaking the compact liquid look sitting permanently above the
+            // hero. So on Android it's dismissible-into-the-inbox (restorable) like the calibrating note: a
+            // small × tucks it into Updates so it isn't a fixed fixture between the header and the hero.
+            if (selectedDayOffset == 0 && scoreState is ScoreState.CarriedLastNight && !carriedSleepDismissed) {
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    ScoreStateNote(scoreState)
+                    if (updateStore != null) {
+                        TodayCardDismissButton(
+                            modifier = Modifier.align(Alignment.TopEnd),
+                            onClick = {
+                                dismissTodayCard(
+                                    CARD_CARRIED_SLEEP,
+                                    scoreState.title,
+                                    scoreState.detail,
+                                )
+                            },
+                        )
+                    }
+                }
             }
             // #827: the dismissible calibrating note. Hidden once dismissed into the inbox; a "Restore to
             // Today" tap there flips calibratingDismissed back via the shared restore path above.
@@ -1029,14 +1091,16 @@ fun TodayScreen(
         // in-card scene here, and no rounded clip (a flat hero on the screen-level backdrop). The Charge
         // ring value reads WHITE (GlowRing's centre label) with a charge-green arc, matching the iOS source.
         item {
+        // The liquid hero CARD: a translucent near-black that floats over the day-of-sky so the vessels +
+        // white count-up numbers stay crisp — the card does the contrast work, not a muted sky. A rounded
+        // 26 corner + a faint white hairline give it the frosted-glass edge of the iOS liquid heroCard
+        // (heroFill = rgba(13,14,20,.80), stroke white@0.11). Mirrors the iOS LiquidTodayView heroCard.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                // The dark hero CARD floats over the vivid day-scene so the rings + white numbers stay crisp,                 // the card does the contrast work, not a muted scene (2026-06-23). Mirrors iOS heroSection.
-                .background(
-                    Palette.surfaceBase.copy(alpha = 0.72f),
-                    RoundedCornerShape(Metrics.cardRadius),
-                )
+                .clip(RoundedCornerShape(LIQUID_HERO_RADIUS))
+                .background(LIQUID_HERO_FILL)
+                .border(1.dp, Color.White.copy(alpha = 0.11f), RoundedCornerShape(LIQUID_HERO_RADIUS))
                 .staggeredAppear(1),
         ) {
             ScoreHeroRow(
@@ -1051,6 +1115,17 @@ fun TodayScreen(
                 onScoreInfo = openGuide,
                 onChargeTap = { showChargeBreakdown = true },
             )
+        }
+        }
+
+        // HEART RATE, the live HR thread / trend card, directly under the hero — the SAME order as the iOS
+        // liquid Today (scene → heartRateSection → yourCardsSection). It carries its own live-HR thread + the
+        // banked 5-minute fallback + the "connect your strap" empty state, all self-contained (its own data
+        // loads), so moving it up here is a pure re-order that preserves every binding. Mirrors iOS
+        // heartRateSection sitting first after the hero.
+        item {
+        Box(modifier = Modifier.fillMaxWidth().staggeredAppear(5)) {
+            HeartRateTrendCard(viewModel, days, selectedDay, todayDate, displayMetric, effortScale)
         }
         }
 
@@ -1086,8 +1161,9 @@ fun TodayScreen(
                 hydrationGoalMl = hydrationGoalMl,
                 onOpenHydration = onOpenHydration,
                 onOpenStress = onOpenStress,
-                onOpenHealth = onOpenHealth,
+                onOpenMetric = onOpenMetric,
                 onOpenSleep = onOpenSleep,
+                onOpenCoupled = onOpenCoupled,
                 onCustomise = { showDashboardEditor = true },
             )
         }
@@ -1219,11 +1295,6 @@ fun TodayScreen(
                 metricsExpanded = metricsExpanded,
                 onToggleMetrics = { metricsExpanded = !metricsExpanded },
             )
-        }
-        }
-        item {
-        Box(modifier = Modifier.fillMaxWidth().staggeredAppear(5)) {
-            HeartRateTrendCard(viewModel, days, selectedDay, todayDate, displayMetric, effortScale)
         }
         }
         item {
@@ -1360,13 +1431,16 @@ private fun WorkoutInProgressCard(
     val elapsed = elapsedClock(elapsedS)
     val sportLabel = workout.sport.name
 
+    // liquidPress on the whole tappable "return to workout" card (same interactionSource on clickable + press).
+    val interaction = remember { MutableInteractionSource() }
     NoopCard(
         tint = Palette.metricRose,
         // Combine into ONE actionable element so TalkBack reads "Workout in progress, $sport, $elapsed,
         // Return to workout" as a single Button, not five stops; the decorative dot is omitted by clearing
         // child semantics. The whole card is the tap target.
         modifier = Modifier
-            .clickable(onClick = onReturn)
+            .liquidPress(interaction)
+            .clickable(interactionSource = interaction, indication = null, onClick = onReturn)
             .semantics(mergeDescendants = true) {
                 contentDescription = "Workout in progress, $sportLabel, $elapsed. Return to workout."
             },
@@ -1423,66 +1497,6 @@ private fun WorkoutInProgressCard(
 }
 
 /**
- * The Updates "ringer": a bell glyph on a 36dp inset disc (textSecondary tint) with a small unread-count
- * badge overlaid top-trailing when [unreadCount] > 0. Sized to the uniform 36dp top-bar icon
- * ([Metrics.iconButton]) so it matches the recording light, the + and the avatar. Tapping opens the inbox
- * sheet. Mirrors the iOS `updateBell` (bell.badge + a statusCritical capsule on a 36pt circle). No glow.
- */
-@Composable
-private fun UpdateBell(unreadCount: Int, onClick: () -> Unit) {
-    val label = if (unreadCount > 0) "Updates, $unreadCount unread" else "Updates"
-    Box(
-        // The outer Box is NOT clipped so the gold count pill can overflow the disc's top-trailing corner;
-        // the inset disc inside carries the CircleShape clip + fill. There's no ripple (indication = null).
-        modifier = Modifier
-            .size(Metrics.iconButton)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClick,
-            )
-            .semantics { contentDescription = label },
-        contentAlignment = Alignment.Center,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(Metrics.iconButton)
-                .clip(CircleShape)
-                .background(Palette.surfaceInset),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                if (unreadCount > 0) Icons.Filled.NotificationsActive else Icons.Outlined.Notifications,
-                contentDescription = null,
-                tint = Palette.textSecondary,
-                modifier = Modifier.size(Metrics.iconSmall),
-            )
-        }
-        if (unreadCount > 0) {
-            // Unread count pill (statusCritical, crisp-white count), nudged into the top-trailing corner
-            // over the bell, the Design-Reset semantic for an unread/attention dot. Mirrors the iOS
-            // updateBell, which fills the capsule with StrandPalette.statusCritical and reads the count white.
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .offset(x = 3.dp, y = (-2).dp)
-                    .clip(RoundedCornerShape(Metrics.cornerPill))
-                    .background(Palette.statusCritical)
-                    .padding(horizontal = 4.dp, vertical = 1.dp),
-            ) {
-                Text(
-                    if (unreadCount > 99) "99" else unreadCount.toString(),
-                    style = NoopType.footnote.copy(fontSize = 9.sp),
-                    // Crisp white on the critical fill (iOS goldDeepText = #FFFFFF post-reset); a fixed white
-                    // here, not the theme-dependent goldDeepText (brown in light mode), keeps the count legible.
-                    color = Color(0xFFFFFFFF),
-                )
-            }
-        }
-    }
-}
-
-/**
  * A small top-trailing × for a Today info-card that has no built-in dismiss control (the shared
  * [DataPendingNote]). Matches the "New here?" card's × styling. Dismisses the card into the inbox.
  */
@@ -1505,18 +1519,18 @@ private fun TodayCardDismissButton(onClick: () -> Unit, modifier: Modifier = Mod
 
 @Composable
 private fun QuickActionDisc(onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
-            // Uniform 36dp top-bar icon ([Metrics.iconButton]) so the + matches the recording light, bell
-            // and avatar, the accented (reset-blue) primary among an otherwise neutral set (iOS parity).
-            .size(Metrics.iconButton)
+            // 34dp to sit level with the heart / avatar / battery ring in the liquid header cluster.
+            .size(34.dp)
+            .liquidPress(interaction)
             .clip(CircleShape)
-            // Flat accent fill + a faint accent hairline (Design Reset: a + action reads on the blue accent,
-            // never gold). Mirrors the iOS quick-action +, a glyph on Circle().fill(StrandPalette.accent).
-            .background(Palette.accent)
-            .border(0.5.dp, Palette.accent.copy(alpha = 0.5f), CircleShape)
+            // A translucent-white disc so the + reads on the day-of-sky like the rest of the liquid cluster,
+            // with a crisp white glyph. Mirrors iOS LiquidAddButton (a "plus" on Circle().fill(.white@0.16)).
+            .background(Color.White.copy(alpha = 0.16f))
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = interaction,
                 indication = null,
                 onClick = onClick,
             )
@@ -1526,9 +1540,8 @@ private fun QuickActionDisc(onClick: () -> Unit) {
         Icon(
             Icons.Filled.Add,
             contentDescription = null,
-            // Crisp white glyph on the accent fill (iOS goldDeepText = #FFFFFF post-reset).
-            tint = Color(0xFFFFFFFF),
-            modifier = Modifier.size(18.dp),
+            tint = Color.White,
+            modifier = Modifier.size(16.dp),
         )
     }
 }
@@ -1608,37 +1621,6 @@ private fun ScoringGuideIntroCard(onOpen: () -> Unit, onDismiss: () -> Unit) {
     }
 }
 
-// MARK: - Today top bar (iOS TodayView.todayTopBar parity)
-//
-// A compact header: JUST the selected day as a small locale-numeric date on the LEFT (taps to open the date
-// picker), then a trailing row of UNIFORM 36dp circular icons (a recording-status light, the updates bell,
-// the gold quick-add (+), and the menu/settings avatar). No "Today" / "Yesterday" word, no prev/next
-// chevrons and no full-date subtitle now: day-change is by horizontal swipe across the dashboard or by
-// tapping the date, and a one-word "Swipe" / "Tap" hint flashes periodically in the accent colour to teach
-// the now-invisible gestures. Mirrors iOS todayTopBar.
-
-/** The top-bar date: JUST the selected day as a SMALL locale-numeric string ("28/06/2026" or "6/28/2026"
- *  per region), driven by the screen's own day (NOT LocalDate.now()) so the header and the data day never
- *  drift. No "Today" / "Yesterday" word and no prev/next arrows now: day-change is by horizontal swipe or
- *  by tapping to open the picker, and a rotating one-word hint teaches both. Mirrors iOS dayNavDateText. */
-private fun dayNavNumericDate(selectedDay: LocalDate): String {
-    // iOS `.numeric` yields a 4-digit year (e.g. 28/06/2026). The plain localized SHORT style yields a
-    // 2-digit year (M/d/yy) in many locales, so we take the locale's SHORT pattern, widen any 2-y year
-    // field ("yy") to a 4-digit one ("yyyy"), and keep every other locale ordering/separator as-is. Locale
-    // -aware: the field order is never hardcoded to a single region.
-    val locale = Locale.getDefault()
-    val shortPattern = DateTimeFormatterBuilder.getLocalizedDateTimePattern(
-        FormatStyle.SHORT, null, IsoChronology.INSTANCE, locale,
-    )
-    // Replace a run of EXACTLY two y (a 2-digit year) with yyyy; leave single-y or already-4-y untouched.
-    val fourDigitYearPattern = shortPattern.replace(Regex("(?<!y)yy(?!y)"), "yyyy")
-    return selectedDay.format(DateTimeFormatter.ofPattern(fourDigitYearPattern, locale))
-}
-
-/** The two one-word day-nav hints flashed in place of the date, alternating, in the accent colour. With the
- *  arrows gone the swipe / tap affordances are otherwise invisible, so this teaches them. Mirrors iOS. */
-private val DAY_NAV_HINTS = listOf("Swipe", "Tap")
-
 // MARK: - Day navigation (#817) - chevron arrows + horizontal swipe, iOS parity
 //
 // `selectedDayOffset` is days-back-from-today (0 = today, 1 = yesterday, …). The header chevrons and a
@@ -1697,17 +1679,26 @@ internal fun dayNavSwipeTarget(selectedOffset: Int, dragX: Float, thresholdPx: F
     else -> dayNavNewer(selectedOffset)
 }
 
+// MARK: - Liquid Today header (iOS LiquidTodayView.scene parity)
+//
+// A STRUCTURAL rebuild to mirror the iOS liquid Today header element-for-element (NOT the old numeric-date +
+// recording-light + bell header). LEFT: a tappable title block — the big rounded-bold day title over a human
+// date line ("Friday, 3 July"), tap opens the day picker. RIGHT: exactly the iOS four controls, in order —
+// a filled HEART (→ Support), the PROFILE AVATAR (→ Settings), a "+" ADD button (→ quick actions), and the
+// strap BATTERY RING (→ Devices). Each ~34dp, spacing ~8dp. There is no recording light and no bell here;
+// iOS's Today header has neither, and the Updates inbox is relocated into the "+" quick-actions sheet.
+
 @Composable
-private fun TodayTopBar(
-    dateText: String,
+private fun LiquidTodayHeader(
+    dayTitle: String,
+    humanDate: String,
     selectedDay: LocalDate,
-    recordingState: RecordingState?,
+    batteryPct: Double?,
     onPickDay: (Int) -> Unit,
-    updateStore: UpdateStore?,
-    onOpenUpdates: () -> Unit,
+    onSupport: () -> Unit,
     onQuickActions: () -> Unit,
     onOpenSettings: () -> Unit,
-    onRecordingTap: () -> Unit,
+    onOpenDevices: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var showPicker by remember { mutableStateOf(false) }
@@ -1740,39 +1731,15 @@ private fun TodayTopBar(
         }
     }
 
-    // The rotating one-word hint shown in place of the date (null = show the date). Roughly every 10s it
-    // flashes a hint for ~1.5s, alternating "Swipe" / "Tap", in the accent colour, then returns to the date.
-    // With the arrows gone these are the only cues for the swipe / tap day-nav, so this teaches them. One
-    // coroutine, auto-cancelled when the top bar leaves composition (no leaked timer). Mirrors iOS .task.
-    var dayNavHint by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
-        var i = 0
-        while (true) {
-            kotlinx.coroutines.delay(10_000)
-            dayNavHint = DAY_NAV_HINTS[i % DAY_NAV_HINTS.size]
-            i++
-            kotlinx.coroutines.delay(1_500)
-            dayNavHint = null
-        }
-    }
-    // Fade the colour between the normal date (primary) and the accent-coloured hint, mirroring the iOS
-    // easeInOut colour swap. The text itself crossfades between the date string and the hint word.
-    val dateColor by animateColorAsState(
-        targetValue = if (dayNavHint != null) Palette.accent else Palette.textPrimary,
-        label = "day-nav-hint-color",
-    )
-
     Row(
         modifier = modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // LEFT side: JUST the date, small (locale numeric), no relative word and no prev/next arrows. Taps open
-        // the date picker; a horizontal swipe across the dashboard still changes the day. Every ~10s it
-        // swaps for ~1.5s to a one-word "Swipe" / "Tap" hint in the accent colour so users learn the now-
-        // invisible day-nav gestures. weight(1f) so the date claims the leading room and never pushes the
-        // trailing icon cluster, which sits after this. Mirrors iOS dayNavDateText + the .task hint loop.
-        Box(
+        // LEFT: the tappable title block — big rounded-bold day title over the human date line. Taps open the
+        // day picker; a horizontal swipe across the dashboard still changes the day. weight(1f) so the title
+        // claims the leading room and never pushes the trailing control cluster. Mirrors iOS's title Button.
+        Column(
             modifier = Modifier
                 .weight(1f)
                 .clip(RoundedCornerShape(Metrics.cornerSm))
@@ -1782,102 +1749,225 @@ private fun TodayTopBar(
                     onClickLabel = "Change day",
                     onClick = { showPicker = true },
                 )
-                .semantics { contentDescription = "$dateText. Swipe or tap to change day" },
+                .semantics { contentDescription = "$dayTitle, $humanDate. Tap to pick a day, swipe to change day." },
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Crossfade(targetState = dayNavHint ?: dateText, label = "day-nav-date") { label ->
-                Text(
-                    label,
-                    // ~13sp SemiBold, matching the iOS .system(size: 13, weight: .semibold). subhead is the
-                    // 13sp house style; override its weight to semibold for the bolder date stamp.
-                    style = NoopType.subhead.copy(fontWeight = FontWeight.SemiBold),
-                    color = dateColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            Text(
+                dayTitle,
+                // ~28sp Bold rounded, matching iOS `StrandFont.rounded(28)`. A soft shadow so it reads on the
+                // day-of-sky. NoopType.number is the house tabular sans; Bold at 28 is the display day title.
+                style = NoopType.number(28f, weight = FontWeight.Bold)
+                    .copy(shadow = Shadow(color = Color.Black.copy(alpha = 0.4f), offset = Offset(0f, 1f), blurRadius = 10f)),
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                humanDate,
+                style = NoopType.caption.copy(shadow = Shadow(color = Color.Black.copy(alpha = 0.35f), offset = Offset(0f, 1f), blurRadius = 8f)),
+                color = Color.White.copy(alpha = 0.78f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
 
-        // RIGHT, the UNIFORM 36dp circular icon set: recording-status light · bell · + · avatar. All
-        // share Metrics.iconButton (36dp), matching iOS's uniform-size top-bar icons.
+        // RIGHT: the iOS four controls, in order — heart · avatar · + · battery ring. Each ~34dp, 8dp apart.
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // Recording-status light, a colour-coded dot inside a 36dp inset disc (green recording /
-            // amber synced / red not-recording / accent experimental). The chip ALWAYS renders so the icon
-            // row never jumps when you scrub to a past day; a past day (null state) shows a muted,
-            // non-interactive dot, recording status only means something for today. Mirrors iOS.
-            RecordingStatusLight(state = recordingState, onClick = onRecordingTap)
-            // Updates bell (36dp inset disc + gold unread pill).
-            if (updateStore != null) {
-                UpdateBell(unreadCount = updateStore.unreadCount, onClick = onOpenUpdates)
-            }
-            // Quick-add (+), the accented gold primary, same 36dp as the rest.
-            QuickActionDisc(onClick = onQuickActions)
-            // Menu / settings avatar, the loop mark when no photo, same 36dp.
+            // (a) Support / donate heart — a filled heart in the charge-green tint (iOS chargeColor). NOOP is
+            // free forever; donations are optional. Mirrors iOS `heart.fill` → showSupport.
+            HeaderHeartButton(onSupport = onSupport)
+            // (b) Profile avatar (the photo set in Settings, or the NOOP loop mark) → Settings. Mirrors iOS.
             Box(
                 modifier = Modifier
-                    .size(Metrics.iconButton)
+                    .size(34.dp)
                     .clip(CircleShape)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                         onClick = onOpenSettings,
                     )
-                    .semantics { contentDescription = "Menu and settings" },
+                    .semantics { contentDescription = "Profile and settings" },
                 contentAlignment = Alignment.Center,
             ) {
-                ProfileAvatar(size = Metrics.iconButton)
+                ProfileAvatar(size = 34.dp)
             }
+            // (c) Quick-add (+), the accented primary. Mirrors iOS's LiquidAddButton (a glyph on a translucent
+            // disc → the quick-actions menu). Sized 34dp to match the rest of the liquid cluster.
+            QuickActionDisc(onClick = onQuickActions)
+            // (d) Strap battery ring showing the % (iOS LiquidBatteryButton). Tap → Devices.
+            LiquidBatteryRing(batteryPct = batteryPct, onClick = onOpenDevices)
         }
     }
 }
 
-/** The top-bar recording-status light: a 36dp inset disc with a centred colour-coded dot, green while
- *  recording, amber after a recent sync, red when not recording, accent for the 5.0 experimental-history
- *  state. The chip ALWAYS renders so the top-bar icon row never jumps when you scrub to a past day; a past
- *  day ([state] == null, no live state) shows a MUTED dot (textTertiary at 0.4 alpha) and is NON-clickable,
- *  recording status only means something for today. Tap (today only) routes to connect. Mirrors the iOS
- *  top-bar RecordingStatusLight + recordingHue (a plain dot). */
+/** The header Support heart (iOS `heart.fill` → showSupport): a filled heart in the charge-green tint on a
+ *  34dp tap target, with a soft shadow so it reads on the day-of-sky. NOOP is free forever; a tap opens the
+ *  optional Support sheet. Mirrors the iOS liquid header heart. */
 @Composable
-private fun RecordingStatusLight(state: RecordingState?, onClick: () -> Unit) {
-    // A live state colours the dot; a past day (null) reads as a muted, non-actionable tertiary dot.
-    val hue = when (state) {
-        RecordingState.Recording -> Palette.statusPositive
-        is RecordingState.LastSynced -> Palette.statusWarning
-        RecordingState.NotRecording -> Palette.statusCritical
-        RecordingState.HistoryExperimental -> Palette.accent
-        null -> Palette.textTertiary.copy(alpha = 0.4f)
-    }
-    val label = if (state != null) {
-        "${state.title}. ${state.detail}"
-    } else {
-        "Recording status, not shown for a past day"
-    }
-    // Only today's chip is tappable; a past day's muted dot is inert (no clickable, matching iOS .disabled).
-    val base = Modifier
-        .size(Metrics.iconButton)
-        .clip(CircleShape)
-        .background(Palette.surfaceInset)
-    val tappable = if (state != null) {
-        base.clickable(
-            interactionSource = remember { MutableInteractionSource() },
-            indication = null,
-            onClick = onClick,
-        )
-    } else {
-        base
-    }
+private fun HeaderHeartButton(onSupport: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
     Box(
-        modifier = tappable.semantics { contentDescription = label },
+        modifier = Modifier
+            .size(34.dp)
+            .liquidPress(interaction)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onSupport,
+            )
+            .semantics {
+                contentDescription =
+                    "Support NOOP. It's free; donations are optional and help development."
+            },
         contentAlignment = Alignment.Center,
     ) {
-        Box(
-            modifier = Modifier
-                .size(10.dp)
-                .clip(CircleShape)
-                .background(hue),
+        Icon(
+            Icons.Filled.Favorite,
+            contentDescription = null,
+            tint = Palette.chargeColor,
+            modifier = Modifier.size(19.dp),
         )
+    }
+}
+
+/** The strap battery ring (iOS LiquidBatteryButton): a 34dp translucent disc with a hairline rim; when a
+ *  reading exists it draws a trimmed ring in the charge/warning/critical hue plus the % inside, else a
+ *  bolt-slash glyph. Tap → Devices. Mirrors the iOS liquid header battery ring. */
+@Composable
+private fun LiquidBatteryRing(batteryPct: Double?, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val label = batteryPct?.let { "Strap battery ${it.roundToInt()} percent" } ?: "Strap battery"
+    Box(
+        modifier = Modifier
+            .size(34.dp)
+            .liquidPress(interaction)
+            .clip(CircleShape)
+            // A translucent near-black disc + faint white rim, matching iOS (rgba(10,11,16,.5) + white@.15).
+            .background(Color(red = 10f / 255f, green = 11f / 255f, blue = 16f / 255f, alpha = 0.5f))
+            .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+            )
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (batteryPct != null) {
+            val pct = batteryPct.coerceIn(0.0, 100.0)
+            val ringColor = when {
+                pct < 15 -> Palette.statusCritical
+                pct < 35 -> Palette.statusWarning
+                else -> Palette.chargeColor
+            }
+            Canvas(modifier = Modifier.size(34.dp).padding(2.5.dp)) {
+                val strokePx = 3.dp.toPx()
+                val d = size.minDimension - strokePx
+                val topLeft = Offset((size.width - d) / 2f, (size.height - d) / 2f)
+                // Track.
+                drawArc(
+                    color = Color.White.copy(alpha = 0.10f),
+                    startAngle = -90f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = Size(d, d),
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                )
+                // Fill arc (min 2% so a near-flat battery still shows a cap), clockwise from 12 o'clock.
+                drawArc(
+                    color = ringColor,
+                    startAngle = -90f,
+                    sweepAngle = (360f * (pct / 100.0).coerceIn(0.02, 1.0)).toFloat(),
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = Size(d, d),
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                )
+            }
+            Text(
+                "${pct.roundToInt()}",
+                style = NoopType.number(9f, weight = FontWeight.Bold),
+                color = Color.White.copy(alpha = 0.9f),
+            )
+        } else {
+            Icon(
+                Icons.Filled.BatteryUnknown,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.5f),
+                modifier = Modifier.size(15.dp),
+            )
+        }
+    }
+}
+
+// MARK: - NOOP wordmark (iOS LiquidWordmark parity — centred, with a tap easter egg)
+//
+// The subtle "N O O P" wordmark that sits on the sky between the header and the hero. Built as a row of
+// letters (not one tracked string, which adds a trailing gap after the last glyph and pushes the word
+// off-centre), so it sits DEAD centre, white @ ~50% opacity. A tap plays one of several random one-shot
+// animations — wiggle / shake / flip / spin / bounce / jelly squash. Mirrors iOS LiquidWordmark.
+
+@Composable
+private fun LiquidWordmark() {
+    val reduced = rememberReduceMotion()
+    var rot by remember { mutableStateOf(0f) }        // z-rotation (wiggle / spin)
+    var scaleX by remember { mutableStateOf(1f) }     // horizontal scale (jelly squash)
+    var scaleY by remember { mutableStateOf(1f) }     // vertical scale (bounce / jelly)
+    var dx by remember { mutableStateOf(0f) }         // horizontal offset (shake)
+    var egg by remember { mutableIntStateOf(0) }      // which egg to play (drives the LaunchedEffect)
+
+    val view = LocalView.current
+    val animRot by animateFloatAsState(rot, tween(durationMillis = if (reduced) 0 else 520), label = "wordmark-rot")
+    val animScaleX by animateFloatAsState(scaleX, tween(durationMillis = if (reduced) 0 else 380), label = "wordmark-sx")
+    val animScaleY by animateFloatAsState(scaleY, tween(durationMillis = if (reduced) 0 else 380), label = "wordmark-sy")
+    val animDx by animateFloatAsState(dx, tween(durationMillis = if (reduced) 0 else 420), label = "wordmark-dx")
+
+    // On each tap, kick a value to an extreme then settle it back so the animateFloatAsState eases through
+    // to rest — a natural wobble without hand-authored keyframes. Six variants, chosen at random per tap.
+    LaunchedEffect(egg) {
+        if (egg == 0) return@LaunchedEffect
+        when ((0..5).random()) {
+            0 -> { rot = -12f; kotlinx.coroutines.delay(90); rot = 0f }            // wiggle
+            1 -> { dx = -12f; kotlinx.coroutines.delay(90); dx = 0f }              // shake
+            2 -> { rot += 360f }                                                    // spin
+            3 -> { scaleX = 1.28f; scaleY = 1.28f; kotlinx.coroutines.delay(90); scaleX = 1f; scaleY = 1f } // bounce
+            4 -> { scaleX = 1.35f; scaleY = 0.7f; kotlinx.coroutines.delay(90); scaleX = 1f; scaleY = 1f }  // jelly
+            else -> { rot += 360f }                                                 // flip (spin twin)
+        }
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) {
+                egg += 1
+                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            }
+            .graphicsLayer {
+                rotationZ = animRot
+                this.scaleX = animScaleX
+                this.scaleY = animScaleY
+                translationX = animDx
+            }
+            .clearAndSetSemantics {}, // decorative wordmark — invisible to TalkBack
+        horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        "NOOP".forEach { ch ->
+            Text(
+                ch.toString(),
+                style = NoopType.number(16f, weight = FontWeight.Bold)
+                    .copy(shadow = Shadow(color = Color.Black.copy(alpha = 0.25f), offset = Offset(0f, 1f), blurRadius = 6f)),
+                color = Color.White.copy(alpha = 0.5f),
+            )
+        }
     }
 }
 
@@ -1885,11 +1975,14 @@ private fun RecordingStatusLight(state: RecordingState?, onClick: () -> Unit) {
  *  The whole card is the tap target. Lives near the donation nudge in the Today flow. */
 @Composable
 private fun SupportRow(onSupport: () -> Unit) {
+    // liquidPress on the whole tappable card (the SAME interactionSource drives the clickable + the press).
+    val interaction = remember { MutableInteractionSource() }
     NoopCard(
         modifier = Modifier
+            .liquidPress(interaction)
             .clip(RoundedCornerShape(Metrics.cardRadius))
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = interaction,
                 indication = null,
                 onClick = onSupport,
             )
@@ -1968,6 +2061,13 @@ private fun ScoreHeroRow(
     val effortOutOf = if (effortScale == EffortScale.WHOOP) 21.0 else 100.0
     val effortVal = strain?.let { UnitFormatter.effortValue(it, effortScale) } ?: 0.0
 
+    // The vessels run LIVE (per-frame slosh + tilt) once the row has any real score to show; a wholly
+    // empty/calibrating hero poses them static so a brand-new user's launch churn isn't fighting live
+    // canvases (the Android equivalent of the iOS `dataLoaded` gate on HeroScoreCell). LiquidVessel + the
+    // count-up both honour Reduce Motion internally, so this is purely a "don't animate an empty hero" cost
+    // gate. A carried Charge counts as data (its dimmed vessel should slosh like the Rest one).
+    val animated = recovery != null || strain != null || restScore != null || lastScoredCharge != null
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -1991,81 +2091,84 @@ private fun ScoreHeroRow(
                 horizontalArrangement = Arrangement.spacedBy(ringGap, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.Top,
             ) {
-                // CHARGE, recovery 0–100. Honest empty / calibrating overlay; badges its recovery winner.
+                // CHARGE, recovery 0–100, as a liquid VESSEL with the value counting up over it. Honest
+                // empty / calibrating overlay; badges its recovery winner.
                 HeroRingColumn(
                     domain = DomainTheme.Charge,
                     onInfo = { onScoreInfo(ScoreSection.CHARGE) },
                     provenance = chargeProvenance,
+                    // iOS shows a static "WHOOP" pill under Charge; here it's the fallback when no dynamic
+                    // per-metric provenance resolved, and only when the ring actually shows a value (own or
+                    // carried), so an empty/calibrating Charge shows no pill.
+                    sourcePill = if (recovery != null || lastScoredCharge != null) "WHOOP" else null,
                     onRingTap = onChargeTap,
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         // #802: when today has no Charge yet but a prior night's value is carried, draw a
-                        // DIMMED (0.8 opacity) REAL ring filled to the carried value, matching the Rest ring,
-                        // rather than a bare number on an empty track (which read as broken). Same diameter so
-                        // the self-sizing hero row is untouched; the dim + the carried "Last night · <date>"
-                        // caption mark it as carried, not today's fresh score. Mirrors iOS chargeRing (#802).
+                        // DIMMED (0.8 opacity) REAL vessel filled to the carried value, matching the Rest
+                        // vessel, rather than a bare number on an empty vessel (which read as broken). Same
+                        // diameter so the self-sizing hero row is untouched; the dim + the carried "Last
+                        // night · <date>" caption mark it as carried, not today's fresh score. Mirrors iOS.
                         val carried = if (recovery == null && recoveryCalibration == null) lastScoredCharge else null
                         if (carried != null) {
-                            // #802: the carried branch draws ONLY the dimmed filled ring with the value
-                            // number inside, matching iOS chargeRing. The "Last night · <date>" note is NOT
-                            // drawn in-ring (an unbounded in-ring caption inflated the Charge column and broke
-                            // the three-equal-rings layout); it renders BELOW the hero via ScoreStateNote.
-                            GlowRing(
+                            HeroScoreVessel(
                                 modifier = Modifier.alpha(0.8f),
-                                fraction = (carried.value / 100.0).toFloat(),
+                                fraction = carried.value / 100.0,
                                 value = carried.value,
-                                color = Palette.recoveryColor(carried.value),
+                                tint = Palette.recoveryColor(carried.value),
                                 diameter = ring,
-                                lineWidth = ring * 0.10f,
-                                showsLabel = true,
-                                format = { "${it.roundToInt()}" },
+                                animated = animated,
+                                showsValue = true,
                             )
                         } else {
-                            GlowRing(
-                                fraction = ((recovery ?: 0.0) / 100.0).toFloat(),
+                            HeroScoreVessel(
+                                fraction = (recovery ?: 0.0) / 100.0,
                                 value = recovery ?: 0.0,
-                                color = Palette.recoveryColor(recovery ?: 0.0),
+                                tint = Palette.recoveryColor(recovery ?: 0.0),
                                 diameter = ring,
-                                lineWidth = ring * 0.10f,
-                                showsLabel = recovery != null,
+                                animated = animated,
+                                showsValue = recovery != null,
                             )
-                            // Empty track + calibrating / no-data overlay (the carried case is handled above).
+                            // Empty vessel + calibrating / no-data overlay (the carried case is above).
                             if (recovery == null) RingEmptyOverlay(recoveryCalibration, diameter = ring)
                         }
-                        // No in-ring tap cue: the single tap affordance is the CHARGE-label chevron below the
-                        // ring (HeroRingColumn), matching iOS where the in-ring cue was removed.
+                        // No in-vessel tap cue: the single tap affordance is the CHARGE-label chevron below
+                        // the vessel (HeroRingColumn), matching iOS where the in-ring cue was removed.
                     }
                 }
-                // EFFORT, strain on the gauge, on the user's selected scale.
+                // EFFORT, strain on the gauge, on the user's selected scale, as a liquid vessel.
                 HeroRingColumn(domain = DomainTheme.Effort, onInfo = { onScoreInfo(ScoreSection.EFFORT) }) {
                     Box(contentAlignment = Alignment.Center) {
-                        GlowRing(
-                            fraction = (if (effortOutOf > 0) effortVal / effortOutOf else 0.0).toFloat(),
+                        HeroScoreVessel(
+                            fraction = if (effortOutOf > 0) effortVal / effortOutOf else 0.0,
                             value = effortVal,
-                            color = Palette.effortTint((strain ?: 0.0) / 100.0),
+                            tint = Palette.effortTint((strain ?: 0.0) / 100.0),
                             diameter = ring,
-                            lineWidth = ring * 0.10f,
-                            showsLabel = strain != null,
-                            format = { if (effortScale == EffortScale.WHOOP) String.format("%.1f", it) else it.toInt().toString() },
+                            animated = animated,
+                            showsValue = strain != null,
+                            format = { if (effortScale == EffortScale.WHOOP) String.format(Locale.US, "%.1f", it) else it.toInt().toString() },
                         )
                         if (strain == null) RingNoData()
                     }
                 }
-                // REST, sleep composite 0–100, reusing the recovery ring's colour scale. Badges its real
-                // sleep_performance merge winner under the ring (gated upstream on restScore != null).
+                // REST, sleep composite 0–100, reusing the recovery colour scale, as a liquid vessel. Badges
+                // its real sleep_performance merge winner under the vessel (gated upstream on restScore != null).
                 HeroRingColumn(
                     domain = DomainTheme.Rest,
                     onInfo = { onScoreInfo(ScoreSection.REST) },
                     provenance = restProvenance,
+                    // iOS shows a static "WHOOP" pill under Rest too; fallback when no dynamic provenance
+                    // resolved and the ring shows a real Rest score.
+                    sourcePill = if (restScore != null) "WHOOP" else null,
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        GlowRing(
-                            fraction = ((restScore ?: 0.0) / 100.0).toFloat(),
+                        HeroScoreVessel(
+                            fraction = (restScore ?: 0.0) / 100.0,
                             value = restScore ?: 0.0,
-                            color = Palette.recoveryColor(restScore ?: 0.0),
+                            tint = Palette.recoveryColor(restScore ?: 0.0),
                             diameter = ring,
-                            lineWidth = ring * 0.10f,
-                            showsLabel = restScore != null,
+                            animated = animated,
+                            showsValue = restScore != null,
                         )
                         // #898: an aggregate-import user (a daily HRV/RHR import, no in-bed session) gets a
                         // Charge from WatchRecovery but NO sleep_performance, so Rest used to read a bare
@@ -2096,6 +2199,11 @@ private fun HeroRingColumn(
     domain: DomainTheme,
     onInfo: () -> Unit,
     provenance: String? = null,
+    // iOS parity: a static source pill under the ring (iOS `HeroScoreCell(pill: "WHOOP")` on Charge + Rest,
+    // nil on Effort). Shown ONLY when [provenance] didn't resolve a real per-metric winner, so a real
+    // multi-source badge ("Apple Health" / "On-device") still wins when present; otherwise the same "WHOOP"
+    // pill iOS always shows appears (the maintainer's "android doesn't show the pill" gap). null = no pill.
+    sourcePill: String? = null,
     // A1: when non-null (Charge), the ring is tappable and opens the breakdown sheet. The chevron cue is
     // overlaid by the caller INSIDE the ring box so it adds no stacked height (#762 self-sizing parity).
     onRingTap: (() -> Unit)? = null,
@@ -2106,10 +2214,16 @@ private fun HeroRingColumn(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (onRingTap != null) {
+            // liquidPress on the tappable Charge vessel so it settles inward on press (the vessel itself
+            // also splashes via LiquidVessel's own tap). Same interactionSource on the clickable + press.
+            val ringInteraction = remember { MutableInteractionSource() }
             Box(
                 modifier = Modifier
+                    .liquidPress(ringInteraction)
                     .clip(CircleShape)
                     .clickable(
+                        interactionSource = ringInteraction,
+                        indication = null,
                         onClickLabel = "See what shaped your ${domain.label}",
                         onClick = onRingTap,
                     ),
@@ -2149,12 +2263,86 @@ private fun HeroRingColumn(
             )
         }
         // COMPONENT 4, the real per-metric merge winner under this ring (only when resolved + the ring
-        // has a value). Tinted to the source's badge hue, matching the Data Sources footer + iOS.
+        // has a value). Tinted to the source's badge hue, matching the Data Sources footer + iOS. When it
+        // DIDN'T resolve, fall back to the iOS static "WHOOP" pill so Charge + Rest always carry a source
+        // pill in the same spot as iOS (the maintainer's "android doesn't show the small pill" gap).
         if (provenance != null) {
             SourceBadge(
                 provenance,
                 tint = provenanceLabelTint(provenance),
                 modifier = Modifier.semantics { contentDescription = "Source: $provenance" },
+            )
+        } else if (sourcePill != null) {
+            HeroSourcePill(sourcePill)
+        }
+    }
+}
+
+/**
+ * The static under-ring source pill (iOS `HeroScoreCell`'s "WHOOP" pill). A subtle translucent-white
+ * capsule — white@0.05 fill, white@0.18 hairline, secondary text, overline ~8.5sp / +1.2 tracking — so it
+ * reads on the dark hero card without pulling focus. Matches the iOS pill exactly; shown under Charge + Rest
+ * (never Effort) whenever no dynamic per-metric provenance badge resolved.
+ */
+@Composable
+private fun HeroSourcePill(text: String) {
+    val shape = RoundedCornerShape(50)
+    Text(
+        text = text.uppercase(),
+        style = NoopType.overline.copy(fontSize = 8.5.sp, letterSpacing = 1.2.sp),
+        color = Palette.textSecondary,
+        modifier = Modifier
+            .clip(shape)
+            .background(Color.White.copy(alpha = 0.05f))
+            .border(1.dp, Color.White.copy(alpha = 0.18f), shape)
+            .padding(horizontal = 8.dp, vertical = 2.5.dp)
+            .semantics { contentDescription = "Source: $text" },
+    )
+}
+
+/**
+ * One hero score as a liquid VESSEL with the value counting up over it — the signature liquid Today hero
+ * element. A [LiquidVessel] (Compose primitive, LiquidPrimitives.kt) fills to [fraction] (0..1) in the
+ * domain [tint], sized to [diameter]; over it a [CountUpText] rolls the number up to [value] (white,
+ * tabular, a soft shadow so it reads on the vessel), matching the iOS `HeroScoreCell` (a count-up number
+ * over a filling vessel). The number is hit-transparent (clearAndSetSemantics + no clickable) so a tap
+ * falls THROUGH to the vessel — LiquidVessel owns its own tap→splash+haptic; the enclosing HeroRingColumn
+ * adds the Charge breakdown tap. When [showsValue] is false (no score yet) the vessel draws empty and the
+ * caller overlays the calibrating / No-Data text, so the number is simply omitted here.
+ *
+ * The number size tracks the diameter (≈ 0.27×, capped) so the three equal vessels stay balanced; it
+ * mirrors the iOS 96dp-vessel → 26pt-number ratio. Values/bindings are UNCHANGED from the GlowRing this
+ * replaced — same fraction, same value, same value-sampled tint.
+ */
+@Composable
+private fun HeroScoreVessel(
+    fraction: Double,
+    value: Double,
+    tint: Color,
+    diameter: Dp,
+    modifier: Modifier = Modifier,
+    animated: Boolean = true,
+    showsValue: Boolean = true,
+    format: (Double) -> String = { it.roundToInt().toString() },
+) {
+    Box(modifier = modifier.size(diameter), contentAlignment = Alignment.Center) {
+        LiquidVessel(
+            value = fraction.coerceIn(0.0, 1.0),
+            tint = tint,
+            animated = animated,
+            modifier = Modifier.size(diameter),
+        )
+        if (showsValue) {
+            // Count-up number over the vessel — white, tabular, a soft shadow for legibility, hit-transparent
+            // so the tap reaches the vessel (splash). Size ≈ diameter × 0.27 (iOS 96→26 ratio), capped.
+            val numberSp = (diameter.value * 0.27f).coerceIn(20f, 30f)
+            CountUpText(
+                value = value,
+                format = format,
+                style = NoopType.number(numberSp, weight = FontWeight.Bold)
+                    .copy(shadow = Shadow(color = Color.Black.copy(alpha = 0.5f), offset = Offset(0f, 1f), blurRadius = 6f)),
+                color = Color.White,
+                modifier = Modifier.clearAndSetSemantics {},
             )
         }
     }
@@ -2239,7 +2427,17 @@ private fun SynthesisHeroCard(
             synthesisDetail(day)
         }
         if (synthesisExpanded) {
-            Box(modifier = Modifier.clickable(onClickLabel = "Collapse", onClick = onToggleSynthesis)) {
+            val expandedInteraction = remember { MutableInteractionSource() }
+            Box(
+                modifier = Modifier
+                    .liquidPress(expandedInteraction)
+                    .clickable(
+                        interactionSource = expandedInteraction,
+                        indication = null,
+                        onClickLabel = "Collapse",
+                        onClick = onToggleSynthesis,
+                    ),
+            ) {
                 InsightCard(
                     modifier = Modifier.fillMaxWidth(),
                     category = "Synthesis",
@@ -2255,10 +2453,17 @@ private fun SynthesisHeroCard(
             }
         } else {
             // Collapsed: a one-liner with the SYNTHESIS overline, the status headline and a down-chevron.
+            val collapsedInteraction = remember { MutableInteractionSource() }
             NoopCard(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClickLabel = "Expand for the full read", onClick = onToggleSynthesis),
+                    .liquidPress(collapsedInteraction)
+                    .clickable(
+                        interactionSource = collapsedInteraction,
+                        indication = null,
+                        onClickLabel = "Expand for the full read",
+                        onClick = onToggleSynthesis,
+                    ),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -2364,95 +2569,76 @@ private fun RingNeedsTrackedNight() {
 private fun HeroMetricRows(day: DailyMetric?, carriedDay: DailyMetric? = null) {
     // The row the vitals read from: today's own when it carries recovery, else the carried prior day.
     val vd = carriedDay ?: day
-    // The neutral white card surface (matching iOS's frosted vitals card + every other card), NOT a
-    // faint surfaceInset wash, which blended into the page. NoopCard(tint = null) fills the white
-    // surfaceRaised + a hairline + a rounded clip so the inter-row dividers trim cleanly.
-    NoopCard(padding = 0.dp) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            HeroMetricRow(
-                icon = Icons.Filled.Favorite,
-                label = "HRV",
-                value = vd?.avgHrv?.let { it.roundToInt().toString() } ?: NO_DATA,
-                unit = "ms",
-                hue = Palette.metricCyan,
-            )
-            HeroMetricDivider()
-            HeroMetricRow(
-                icon = Icons.Filled.MonitorHeart,
-                label = "Resting HR",
-                value = vd?.restingHr?.toString() ?: NO_DATA,
-                unit = "bpm",
-                hue = Palette.metricRose,
-            )
-            HeroMetricDivider()
-            HeroMetricRow(
-                icon = Icons.Filled.Air,
-                label = "Respiratory",
-                value = vd?.respRateBpm?.let { String.format(Locale.US, "%.1f", it) } ?: NO_DATA,
-                unit = "rpm",
-                hue = Palette.sleepLight,
-            )
-            // ONE provenance footnote when these are carried prior-day vitals, matching the carried Charge
-            // ring's "Last night · <date>" stamp so the whole recovery side is labelled as a prior read.
-            if (carriedDay != null) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Metrics.space14, vertical = Metrics.space12)
-                        .semantics { contentDescription = "These vitals are from last night ${lastChargeDateLabel(carriedDay.day)}" },
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Icon(
-                        Icons.Filled.History,
-                        contentDescription = null,
-                        tint = Palette.textTertiary,
-                        modifier = Modifier.size(13.dp),
-                    )
-                    Text(
-                        carriedCaption(carriedDay.day),
-                        style = NoopType.footnote,
-                        color = Palette.textTertiary,
-                    )
-                }
+    // iOS `recoveryVitalsSection`: a frosted card with a "RECOVERY VITALS" header + a "last night · <date>"
+    // on the right, then three `vitalRow`s (26dp mini LIQUID VESSEL + label + value). NoopCard supplies the
+    // same neutral surfaceRaised + hairline as iOS's frosted card. Inner spacing 12, matching iOS.
+    NoopCard(padding = Metrics.space16) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(Metrics.space12),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Overline("Recovery vitals", modifier = Modifier.weight(1f))
+                // iOS `lastNightLine` — "Last night · <date>" (or the carried day's stamp when carried).
+                Text(
+                    if (carriedDay != null) carriedCaption(carriedDay.day) else heroVitalsLastNightLine(),
+                    style = NoopType.caption,
+                    color = Palette.textTertiary,
+                )
             }
+            HeroVitalRow(
+                label = "Heart-rate variability",
+                value = vd?.avgHrv?.let { "${it.roundToInt()} ms" } ?: NO_DATA,
+                tint = Palette.metricCyan,
+                fraction = vd?.avgHrv?.let { (it / 120.0).coerceIn(0.0, 1.0) },
+            )
+            HeroVitalRow(
+                label = "Resting heart rate",
+                value = vd?.restingHr?.let { "$it bpm" } ?: NO_DATA,
+                tint = Palette.metricRose,
+                fraction = vd?.restingHr?.let { (it / 100.0).coerceIn(0.0, 1.0) },
+            )
+            HeroVitalRow(
+                label = "Breaths per minute",
+                value = vd?.respRateBpm?.let { String.format(Locale.US, "%.1f rpm", it) } ?: NO_DATA,
+                tint = Palette.accent,
+                fraction = vd?.respRateBpm?.let { (it / 24.0).coerceIn(0.0, 1.0) },
+            )
         }
     }
 }
 
+/** iOS `lastNightLine` — "Last night · <date>" where <date> is yesterday in "d MMM" form. */
+private fun heroVitalsLastNightLine(): String {
+    val d = LocalDate.now().minusDays(1)
+    return "Last night · ${d.format(DateTimeFormatter.ofPattern("d MMM", Locale.US))}"
+}
+
+/** One iOS `vitalRow`: a 26dp mini liquid VESSEL filled to [fraction] in [tint], the label (subhead,
+ *  secondary), a spacer, and the value (number 15, primary). Replaces the old flat-Material-icon row. */
 @Composable
-private fun HeroMetricRow(icon: ImageVector, label: String, value: String, unit: String, hue: Color) {
+private fun HeroVitalRow(label: String, value: String, tint: Color, fraction: Double?) {
     val hasValue = value != NO_DATA
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = Metrics.space14, vertical = Metrics.space12)
-            .semantics { contentDescription = "$label $value $unit" },
+            .semantics { contentDescription = "$label $value" },
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Metrics.space12),
     ) {
-        Icon(icon, contentDescription = null, tint = hue, modifier = Modifier.size(17.dp))
-        Spacer(Modifier.width(Metrics.space12))
+        LiquidVessel(
+            value = fraction,
+            tint = tint,
+            animated = false,
+            modifier = Modifier.size(26.dp),
+        )
         Text(label, style = NoopType.subhead, color = Palette.textSecondary, modifier = Modifier.weight(1f))
         Text(
             value,
-            style = NoopType.bodyNumber,
+            style = NoopType.number(15f),
             color = if (hasValue) Palette.textPrimary else Palette.textTertiary,
         )
-        if (hasValue) {
-            Spacer(Modifier.width(Metrics.space4))
-            Text(unit, style = NoopType.footnote, color = Palette.textTertiary)
-        }
     }
-}
-
-@Composable
-private fun HeroMetricDivider() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(Metrics.divider)
-            .background(Palette.hairline.copy(alpha = 0.5f)),
-    )
 }
 
 // MARK: - "Your cards" dashboard (WHOOP "My Dashboard"), iOS yourCardsSection parity
@@ -2478,8 +2664,9 @@ private fun YourCardsSection(
     hydrationGoalMl: Int,
     onOpenHydration: () -> Unit,
     onOpenStress: () -> Unit,
-    onOpenHealth: () -> Unit,
+    onOpenMetric: (String) -> Unit,
     onOpenSleep: () -> Unit,
+    onOpenCoupled: () -> Unit,
     onCustomise: () -> Unit,
 ) {
     Box(modifier = Modifier.fillMaxWidth().staggeredAppear(2)) {
@@ -2521,17 +2708,29 @@ private fun YourCardsSection(
                         hydrationTotalMl = hydrationTotalMl,
                         hydrationGoalMl = hydrationGoalMl,
                     ),
+                    // The mini liquid vessel's fill — the SAME per-card fraction iOS `liquidCard` uses.
+                    fraction = dashboardCardFraction(
+                        card = card,
+                        day = day,
+                        carriedDay = carriedDay,
+                        stress = stress,
+                        fitnessAge = fitnessAge,
+                        vitality = vitality,
+                        importedStepsForDay = importedStepsForDay,
+                        estimatedStepsForDay = estimatedStepsForDay,
+                    ),
                     tint = dashboardCardTint(card),
-                    // #706/#684: every card now opens its detail, matching iOS. The Stress card -> Stress; the
-                    // overnight vitals (HRV / Resting HR / Respiratory / SpO₂ / Skin Temp) + Fitness age /
-                    // Vitality / Steps / Calories -> Health (the vital-signs surface, the iOS HealthView twin);
-                    // Sleep -> Sleep; Hydration -> Hydration. The whole row is the button, the chevron the hint.
+                    // #706/#684: every card now opens its OWN detail, matching iOS. The Stress card -> Stress;
+                    // the overnight vitals (HRV / Resting HR / Respiratory / SpO₂ / Skin Temp) + Fitness age /
+                    // Vitality / Steps / Calories -> each metric's focused trend (vital_detail/<key>, the iOS
+                    // metricDetail twin); Sleep -> Sleep; Hydration -> Hydration. Whole row is the button.
                     onClick = dashboardCardDestination(
                         card = card,
                         onOpenStress = onOpenStress,
-                        onOpenHealth = onOpenHealth,
+                        onOpenMetric = onOpenMetric,
                         onOpenSleep = onOpenSleep,
                         onOpenHydration = onOpenHydration,
+                        onOpenCoupled = onOpenCoupled,
                     ),
                 )
             }
@@ -2539,34 +2738,61 @@ private fun YourCardsSection(
     }
 }
 
-/** The detail-screen callback a dashboard card opens when tapped, or null if it has no destination. Mirrors
- *  the iOS dashboardCardRow switch: Stress -> Stress; the overnight vitals + Fitness age / Vitality / Steps /
- *  Calories -> Health (the vital-signs hub); Sleep -> Sleep; Hydration -> Hydration. Every card resolves to a
- *  destination, so the chevron is always honest (#706/#684). */
+/** The `vital_detail/<key>` key a metric/vital card opens, or null when the card has its OWN dedicated
+ *  screen (Stress / Sleep / Hydration / Coupled) rather than a metric-detail trend. Mirrors the iOS
+ *  `liquidCard` switch, where every metric/vital card opens `metricDetail(key)` (its own focused trend),
+ *  NOT the shared Health hub (2026-07-03). Keys are the Android VitalDetailScreen keys. */
+private fun dashboardCardMetricKey(card: DashboardCard): String? = when (card) {
+    DashboardCard.HRV -> "hrv"
+    DashboardCard.RESTING_HR -> "rhr"
+    DashboardCard.RESPIRATORY -> "resp"
+    DashboardCard.BLOOD_OXYGEN -> "spo2"
+    DashboardCard.SKIN_TEMP -> "skin"
+    DashboardCard.FITNESS_AGE -> "fitness_age"
+    DashboardCard.VITALITY -> "vitality"
+    DashboardCard.STEPS -> "steps_est"
+    DashboardCard.CALORIES -> "active_kcal"
+    // These carry their own full screen, not a per-metric trend.
+    DashboardCard.STRESS, DashboardCard.SLEEP, DashboardCard.HYDRATION, DashboardCard.COUPLED -> null
+}
+
+/** The destination callback a dashboard card opens when tapped. Mirrors the iOS dashboardCardRow switch:
+ *  Stress -> Stress; Sleep -> Sleep; Hydration -> Hydration; Coupled -> the WHOOP-style day screen; every
+ *  metric/vital card -> its OWN focused trend (`vital_detail/<key>` via [onOpenMetric]), matching the iOS
+ *  `metricDetail(key)`. Every card resolves to a destination, so the chevron is always honest (#706/#684). */
 private fun dashboardCardDestination(
     card: DashboardCard,
     onOpenStress: () -> Unit,
-    onOpenHealth: () -> Unit,
+    onOpenMetric: (String) -> Unit,
     onOpenSleep: () -> Unit,
     onOpenHydration: () -> Unit,
+    onOpenCoupled: () -> Unit,
 ): () -> Unit = when (card) {
     DashboardCard.STRESS -> onOpenStress
     DashboardCard.SLEEP -> onOpenSleep
     DashboardCard.HYDRATION -> onOpenHydration
-    // Fitness age / Vitality + every overnight vital + steps/calories share the Health detail surface.
-    DashboardCard.FITNESS_AGE, DashboardCard.VITALITY, DashboardCard.HRV, DashboardCard.RESTING_HR,
-    DashboardCard.RESPIRATORY, DashboardCard.BLOOD_OXYGEN, DashboardCard.SKIN_TEMP,
-    DashboardCard.STEPS, DashboardCard.CALORIES -> onOpenHealth
+    // The Coupled view card (#43) taps through to the full WHOOP-style day screen.
+    DashboardCard.COUPLED -> onOpenCoupled
+    // Every overnight vital + Fitness age / Vitality / Steps / Calories opens its own metric-detail trend.
+    else -> {
+        val key = dashboardCardMetricKey(card)
+        if (key != null) ({ onOpenMetric(key) }) else ({})
+    }
 }
 
 /** A dashboard card's WHOOP-token tint (icon + accent). Score cards take their domain colour; vitals take
  *  their biometric hue; everything else the blue accent. No gold (WHOOP), tokens only. Mirrors iOS
- *  dashboardTint. */
+ *  dashboardTint. This drives the mini liquid vessel's tint on each row, so it follows the iOS `liquidCard`
+ *  per-card tints exactly: Stress=accent, Fitness age=charge-green, Vitality=liquid-purple, HRV=cyan,
+ *  Resting HR=rose, Respiratory=accent, Steps=cyan, Sleep=rest, Coupled=charge. */
 private fun dashboardCardTint(card: DashboardCard): Color = when (card) {
-    DashboardCard.STRESS -> Palette.effortColor
+    // iOS `liquidCard`: stress → StrandPalette.accent (blue), not the Effort orange.
+    DashboardCard.STRESS -> Palette.accent
     DashboardCard.FITNESS_AGE -> Palette.chargeColor
-    DashboardCard.VITALITY -> Palette.restColor
-    DashboardCard.HRV -> Palette.metricPurple
+    // iOS vitality → liquidPurple (#9b7bff).
+    DashboardCard.VITALITY -> LIQUID_PURPLE
+    // iOS hrv → metricCyan (this theme's metricPurple is a blue, cyan reads as the iOS HRV teal).
+    DashboardCard.HRV -> Palette.metricCyan
     DashboardCard.RESTING_HR -> Palette.metricRose
     DashboardCard.RESPIRATORY -> Palette.accent
     DashboardCard.BLOOD_OXYGEN -> Palette.metricCyan
@@ -2575,6 +2801,47 @@ private fun dashboardCardTint(card: DashboardCard): Color = when (card) {
     DashboardCard.STEPS -> Palette.metricCyan
     DashboardCard.CALORIES -> Palette.metricAmber
     DashboardCard.HYDRATION -> Palette.metricCyan
+    DashboardCard.COUPLED -> Palette.chargeColor
+}
+
+/**
+ * A dashboard card's mini-vessel fill fraction (0..1), or null for an empty (no-reading) vessel. Mirrors the
+ * iOS `liquidCard` `frac:` argument exactly, per card:
+ *   Stress = stress/3 · Fitness age = 0.5 (fixed) · Vitality = vitality/100 · HRV = avgHrv/120 ·
+ *   Resting HR = restingHr/100 · Respiratory = respRate/24 · Steps = steps/10000 · Sleep = totalSleepMin/480 ·
+ *   Coupled = 0.6 (fixed) · Blood oxygen / Skin temp / Calories / Hydration = null (empty, not half-full).
+ * Reads the SAME `carriedDay ?: day` carry-over the row VALUE uses for the overnight vitals, so the vessel
+ * fill and the number agree after the logical-day rollover.
+ */
+private fun dashboardCardFraction(
+    card: DashboardCard,
+    day: DailyMetric?,
+    carriedDay: DailyMetric?,
+    stress: Double?,
+    fitnessAge: Double?,
+    vitality: Double?,
+    importedStepsForDay: Int?,
+    estimatedStepsForDay: Int?,
+): Double? {
+    fun over(v: Double?, ceiling: Double): Double? = v?.let { (it / ceiling).coerceIn(0.0, 1.0) }
+    val vd = carriedDay ?: day
+    return when (card) {
+        DashboardCard.STRESS -> over(stress, 3.0)
+        DashboardCard.FITNESS_AGE -> if (fitnessAge != null) 0.5 else null
+        DashboardCard.VITALITY -> over(vitality, 100.0)
+        DashboardCard.HRV -> over(vd?.avgHrv, 120.0)
+        DashboardCard.RESTING_HR -> over(vd?.restingHr?.toDouble(), 100.0)
+        DashboardCard.RESPIRATORY -> over(vd?.respRateBpm, 24.0)
+        DashboardCard.STEPS -> {
+            val steps = (day?.steps ?: importedStepsForDay ?: estimatedStepsForDay)?.toDouble()
+            over(steps, 10000.0)
+        }
+        DashboardCard.SLEEP -> over(vd?.totalSleepMin, 480.0)
+        DashboardCard.COUPLED -> 0.6
+        // Not wired to a real read yet — an EMPTY vessel (not half-full) so it doesn't imply a reading.
+        DashboardCard.BLOOD_OXYGEN, DashboardCard.SKIN_TEMP, DashboardCard.CALORIES,
+        DashboardCard.HYDRATION -> null
+    }
 }
 
 /**
@@ -2646,6 +2913,10 @@ private fun dashboardCardValue(
                 Locale.US, "%.1f / %.1f L",
                 hydrationTotalMl / 1000.0, hydrationGoalMl / 1000.0,
             )
+        DashboardCard.COUPLED ->
+            // A tap-through row with no metric value of its own, the row shows just the chevron. An empty
+            // string (not NO_DATA) renders no number and leaves it un-dimmed. Mirrors iOS dashboardValue.
+            ""
     }
 }
 
@@ -2659,61 +2930,78 @@ private fun dashboardCardValue(
 private fun DashboardCardRow(
     card: DashboardCard,
     value: String,
+    fraction: Double?,
     tint: Color,
     onClick: (() -> Unit)? = null,
 ) {
     // A real number renders white; a placeholder (No Data, or the Stress calibrating state) renders dimmed.
     val hasValue = value != NO_DATA && value != STRESS_CALIBRATING
+    // iOS `cardLink` corner is 20 (a touch rounder than the app-wide 18dp card), with the SAME neutral
+    // surfaceRaised fill + plain hairline the frosted neutral surface already draws.
+    val rowShape = RoundedCornerShape(20.dp)
+    // liquidPress: the tappable card settles inward on press (the iOS LiquidPressStyle feel). The SAME
+    // interactionSource feeds the clickable and the press modifier, so it responds to the actual touch.
+    // It is applied OUTSIDE the frosted surface so the whole card (surface + content) scales/dims as one.
+    val interaction = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(Metrics.cardRadius))
-            .frostedCardSurface(cornerRadius = Metrics.cardRadius)
-            .let { if (onClick != null) it.clickable(onClick = onClick) else it }
-            .padding(horizontal = 13.dp, vertical = 11.dp)
+            .let { if (onClick != null) it.liquidPress(interaction) else it }
+            .clip(rowShape)
+            .frostedCardSurface(cornerRadius = 20.dp)
+            .let {
+                if (onClick != null) {
+                    it.clickable(interactionSource = interaction, indication = null, onClick = onClick)
+                } else it
+            }
+            // iOS row padding: 14h / 11v (tighter than the old 13/11 icon-box row).
+            .padding(horizontal = 14.dp, vertical = 11.dp)
             .semantics { contentDescription = "${card.title}: $value" },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(34.dp)
-                .clip(RoundedCornerShape(9.dp))
-                .background(tint.copy(alpha = 0.14f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(card.icon, contentDescription = null, tint = tint, modifier = Modifier.size(17.dp))
-        }
+        // THE fix: a 30dp mini LIQUID VESSEL filled to this card's fraction, tinted its domain colour — the
+        // "small liquid circle per icon" iOS shows and Android was missing (a flat Material-icon square).
+        // Static (animated=false) so the many small gauges cost nothing per frame, matching iOS `cardLink`.
+        LiquidVessel(
+            value = fraction,
+            tint = tint,
+            animated = false,
+            modifier = Modifier.size(30.dp),
+        )
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
         ) {
+            // iOS: overline 11 / +1.0 tracking, textPrimary.
             Text(
                 card.title.uppercase(),
-                style = NoopType.overline.copy(letterSpacing = 0.4.sp),
+                style = NoopType.overline.copy(fontSize = 11.sp, letterSpacing = 1.0.sp),
                 color = Palette.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 card.subtitle,
-                style = NoopType.footnote,
+                style = NoopType.caption,
                 color = Palette.textTertiary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
+        // iOS value = number(17), textPrimary.
         Text(
             value,
-            style = NoopType.title2.copy(fontWeight = FontWeight.SemiBold),
+            style = NoopType.number(17f),
             color = if (hasValue) Palette.textPrimary else Palette.textTertiary,
             maxLines = 1,
         )
+        // iOS chevron = 12.
         Icon(
             Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,
             tint = Palette.textTertiary,
-            modifier = Modifier.size(Metrics.iconSmall),
+            modifier = Modifier.size(12.dp),
         )
     }
 }
@@ -2893,9 +3181,11 @@ private data class EditableDashboardCard(val card: DashboardCard, val enabled: B
  * Contributors bars and (S4) the folded Readiness card. Built only when shown (the caller gates on
  * showChargeBreakdown), so the heavy rows materialise on tap (#819). Nothing is recomputed here, it reuses
  * the existing sections, which read the SAME carried/today row the ring shows. Mirrors iOS chargeBreakdownSheet.
+ * `internal` (not private) so the Coupled view's hero ring (task #43) opens THIS same sheet, one breakdown,
+ * never a duplicate.
  */
 @Composable
-private fun ChargeBreakdownSheet(
+internal fun ChargeBreakdownSheet(
     days: List<DailyMetric>,
     displayDay: DailyMetric?,
     carriedDay: DailyMetric?,
@@ -3163,32 +3453,29 @@ private fun RecoveryContributorsSection(day: DailyMetric?, carriedDay: DailyMetr
     }
 }
 
-/** One labelled contributor bar in the shared stage/zone-bar style: a label + right-aligned read-out
- *  over an inset track with a round-capped metric-hue fill. A null fraction renders an empty track. */
+/** One labelled contributor bar: a label + right-aligned read-out over a liquid TUBE filled to [fraction].
+ *  These ARE genuine single-value progress bars (each signal against a typical adult span), so the liquid
+ *  finish reads well here (matching how the iOS liquid Today draws its single-value goal/strain bars as
+ *  tubes). Static (not per-frame) — they sit in the tapped-open Charge breakdown, not a live surface, so
+ *  `animated = false` keeps the sheet cheap. A null fraction renders an empty tube. */
 @Composable
 private fun ContributorBar(label: String, readout: String, fraction: Double?, color: Color) {
-    val fillFrac = fraction?.coerceIn(0.0, 1.0)?.toFloat() ?: 0f
+    val fillFrac = fraction?.coerceIn(0.0, 1.0) ?: 0.0
     Column(verticalArrangement = Arrangement.spacedBy(Metrics.space6)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Overline(label, modifier = Modifier.weight(1f))
             Text(readout, style = NoopType.captionNumber, color = Palette.textPrimary)
         }
-        Box(
+        LiquidTube(
+            frac = fillFrac,
+            tint = color,
+            height = Metrics.progressHeight,
+            animated = false,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(Metrics.progressHeight)
-                .clip(RoundedCornerShape(Metrics.cornerPill))
-                .background(Palette.surfaceInset)
-                .semantics { contentDescription = "$label $readout" }
-                .drawBehind { if (fillFrac > 0f) drawContributorFill(color, fillFrac) },
+                .semantics { contentDescription = "$label $readout" },
         )
     }
-}
-
-private fun DrawScope.drawContributorFill(color: Color, frac: Float) {
-    val w = (size.width * frac).coerceAtLeast(size.height)
-    val r = size.height / 2f
-    drawRoundRect(color = color, size = Size(w, size.height), cornerRadius = CornerRadius(r, r))
 }
 
 /**
@@ -3686,211 +3973,127 @@ private fun MetricGrid(
     metricsExpanded: Boolean = true,
     onToggleMetrics: () -> Unit = {},
 ) {
-    // The "Last night · <date>" caption carried recovery-vital tiles show in place of their unit when
-    // they're showing the prior scored day's value (#543); null when not carrying. Mirrors iOS.
-    val carriedVitalCaption = carriedDay?.let { carriedCaption(it.day) }
-    // One builder per tile, keyed by KeyMetric so the grid can be filtered + reordered per the saved
-    // layout (#251). Each builder is byte-for-byte the tile that used to be hard-coded in the list, the
-    // refactor only changes WHICH tiles render and in WHAT order, never how an individual tile looks.
-    val builders: Map<KeyMetric, @Composable (Modifier) -> Unit> = mapOf(
-        KeyMetric.CHARGE to { m ->
-            // Order of precedence: today's own scored recovery → mid-calibration "N of 4" → the last
-            // scored day carried over ("Last night · <date>", #543) so a post-rollover today that isn't
-            // scored yet keeps a real Charge instead of a bare "No Data" while live HR ticks → NO_DATA
-            // only when there is genuinely nothing banked anywhere. The carry-over shows the PRIOR value
-            // labelled as prior, it never fabricates a number for the new day. Mirrors iOS.
-            SparkStatTile(
-                modifier = m,
-                label = "Charge",
-                value = d?.recovery?.let { "${it.roundToInt()}%" }
+    // FIX 3 (iOS `keyMetricsSection` parity): a 3-COLUMN grid of COMPACT liquid tiles, each an iOS `ktile`
+    // — a 9sp/+1.2 overline label, a value + small unit, and a thin 8dp LiquidTube fill bar — REPLACING the
+    // old 2-column large sparkline cards. One descriptor per KeyMetric, carrying the SAME value/tint reads
+    // the old builders used PLUS the tile's LiquidTube fraction (mirroring the iOS ktile frac). The #251
+    // editor + enabled-order + collapse expander are all preserved; only the tile look changes.
+    val descriptors: Map<KeyMetric, KeyTileData> = mapOf(
+        KeyMetric.CHARGE to run {
+            val v = d?.recovery ?: lastScoredCharge?.value
+            KeyTileData(
+                label = "Recovery",
+                value = d?.recovery?.let { "${it.roundToInt()}" }
                     ?: recoveryCalibration?.let { "$it/${Baselines.minNightsSeed}" }
-                    ?: lastScoredCharge?.let { "${it.value.roundToInt()}%" } ?: NO_DATA,
-                // H10: cold-start Charge, when there's no score, no "N of 4" calibration count and nothing
-                // carried, fall back to the honest "Building, wear it tonight" hint (today only) instead of
-                // a captionless "No Data". Past days stay bare (buildingHint returns null off-today).
-                caption = d?.recovery?.let {
-                    Palette.recoveryState(it).lowercase().replaceFirstChar { c -> c.uppercase() }
-                } ?: recoveryCalibration?.let { "Calibrating" } ?: lastScoredCharge?.caption
-                    ?: buildingHint(KeyMetric.CHARGE, isToday),
-                accent = d?.recovery?.let { Palette.recoveryColor(it) }
-                    ?: lastScoredCharge?.let { Palette.recoveryColor(it.value) } ?: Palette.textTertiary,
-                spark = w.recovery,
-                sparkColor = Palette.accent,
+                    ?: lastScoredCharge?.let { "${it.value.roundToInt()}" } ?: NO_DATA,
+                unit = if (d?.recovery != null || lastScoredCharge != null) "%" else "",
+                tint = v?.let { Palette.recoveryColor(it) } ?: Palette.chargeColor,
+                frac = v?.let { (it / 100.0).coerceIn(0.0, 1.0) },
             )
         },
-        KeyMetric.EFFORT to { m ->
-            // Unscored TODAY → a short "building" hint instead of the "of N" axis caption, so a fresh
-            // user reads "coming" not "broken" (#527); a scored day keeps "of N", a past day stays bare.
-            SparkStatTile(
-                modifier = m,
-                label = "Effort",
-                value = d?.strain?.let { UnitFormatter.effortDisplay(it, effortScale) } ?: NO_DATA,
-                caption = d?.strain?.let { "of ${UnitFormatter.effortScaleMax(effortScale)}" }
-                    ?: buildingHint(KeyMetric.EFFORT, isToday),
-                accent = d?.strain?.let { Palette.effortTint(it / StrainScorer.maxStrain) } ?: Palette.textTertiary,
-                spark = w.strain,
-                sparkColor = Palette.strain066,
-                onInfo = { onScoreInfo(ScoreSection.EFFORT) },
-            )
-        },
-        KeyMetric.REST to { m ->
-            // Unscored TODAY → "building, wear it tonight" instead of a lone dash, so a fresh user reads
-            // "coming" not "broken" (#527); a scored day keeps its sleep caption, a past day stays bare.
-            // H9, when the night IS scored but its staging is low-confidence (a high-efficiency night with
-            // implausibly low deep+REM, per the core's ScoreConfidence rule), badge it "Estimated" so the
-            // stage figures read honestly. Only shown alongside a real score; never on a "building" tile.
-            SparkStatTile(
-                modifier = m,
-                label = "Rest",
-                value = restScore?.let { "${it.roundToInt()}%" } ?: NO_DATA,
-                // Scored → the sleep-duration caption. Unscored TODAY → the "building" hint. Unscored
-                // PAST day → keep the sleep caption (honest: missing score, not mid-calibration).
-                caption = if (restScore != null) restCaption(d)
-                          else buildingHint(KeyMetric.REST, isToday) ?: restCaption(d),
-                accent = restScore?.let { Palette.recoveryColor(it) } ?: Palette.textTertiary,
-                // The Rest composite (0–100) trend, not raw sleep minutes, tracks the score above (#614).
-                spark = restSpark,
-                sparkColor = Palette.metricPurple,
-                onInfo = { onScoreInfo(ScoreSection.REST) },
-                badge = if (restScore != null && restStageLowConfidence(d)) "Estimated" else null,
-            )
-        },
-        KeyMetric.HRV to { m ->
-            // Carry the last scored night's HRV at the rollover (#543), today's wins (unit caption), the
-            // carried value is stamped "Last night · <date>", a never-scored metric still shows "No Data".
-            val today = d?.avgHrv
-            val carried = today ?: carriedDay?.avgHrv
-            SparkStatTile(
-                modifier = m,
+        KeyMetric.EFFORT to KeyTileData(
+            label = "Strain",
+            value = d?.strain?.let { UnitFormatter.effortDisplay(it, effortScale) } ?: NO_DATA,
+            unit = if (d?.strain != null) "%" else "",
+            tint = d?.strain?.let { Palette.effortTint(it / StrainScorer.maxStrain) } ?: Palette.effortColor,
+            frac = d?.strain?.let { (it / 100.0).coerceIn(0.0, 1.0) },
+        ),
+        KeyMetric.REST to KeyTileData(
+            label = "Rest",
+            value = restScore?.let { "${it.roundToInt()}" } ?: NO_DATA,
+            unit = if (restScore != null) "%" else "",
+            tint = restScore?.let { Palette.recoveryColor(it) } ?: Palette.restColor,
+            frac = restScore?.let { (it / 100.0).coerceIn(0.0, 1.0) },
+        ),
+        KeyMetric.HRV to run {
+            val v = d?.avgHrv ?: carriedDay?.avgHrv
+            KeyTileData(
                 label = "HRV",
-                value = carried?.let { "${it.roundToInt()}" } ?: NO_DATA,
-                caption = if (today != null) "ms" else carried?.let { carriedVitalCaption },
-                accent = carried?.let { Palette.metricPurple } ?: Palette.textTertiary,
-                spark = w.hrv,
-                sparkColor = Palette.metricPurple,
+                value = v?.let { "${it.roundToInt()}" } ?: NO_DATA,
+                unit = if (v != null) "ms" else "",
+                tint = Palette.metricCyan,
+                frac = v?.let { (it / 120.0).coerceIn(0.0, 1.0) },
             )
         },
-        KeyMetric.RESTING_HR to { m ->
-            val today = d?.restingHr
-            val carried = today ?: carriedDay?.restingHr
-            SparkStatTile(
-                modifier = m,
-                label = "Resting HR",
-                value = carried?.toString() ?: NO_DATA,
-                caption = if (today != null) "bpm" else carried?.let { carriedVitalCaption },
-                accent = carried?.let { Palette.metricRose } ?: Palette.textTertiary,
-                spark = w.rhr,
-                sparkColor = Palette.metricRose,
+        KeyMetric.RESTING_HR to run {
+            val v = d?.restingHr ?: carriedDay?.restingHr
+            KeyTileData(
+                label = "Rest HR",
+                value = v?.toString() ?: NO_DATA,
+                unit = if (v != null) "bpm" else "",
+                tint = Palette.metricRose,
+                frac = v?.let { (it / 100.0).coerceIn(0.0, 1.0) },
             )
         },
-        KeyMetric.BLOOD_OXYGEN to { m ->
-            val today = d?.spo2Pct
-            val carried = today ?: carriedDay?.spo2Pct
-            SparkStatTile(
-                modifier = m,
+        KeyMetric.BLOOD_OXYGEN to run {
+            val v = d?.spo2Pct ?: carriedDay?.spo2Pct
+            KeyTileData(
                 label = "Blood Oxygen",
-                value = carried?.let { String.format(Locale.US, "%.0f%%", it) } ?: NO_DATA,
-                // H10: with no reading today and nothing carried, say the overnight SpO₂ is still building
-                // (today only) rather than a captionless "No Data". A carried night keeps its date stamp.
-                caption = if (today != null) "SpO₂" else (carried?.let { carriedVitalCaption }
-                    ?: buildingHint(KeyMetric.BLOOD_OXYGEN, isToday)),
-                accent = carried?.let { Palette.metricCyan } ?: Palette.textTertiary,
-                spark = w.spo2,
-                sparkColor = Palette.metricCyan,
+                value = v?.let { String.format(Locale.US, "%.0f", it) } ?: NO_DATA,
+                unit = if (v != null) "%" else "",
+                tint = Palette.metricCyan,
+                frac = v?.let { (it / 100.0).coerceIn(0.0, 1.0) },
             )
         },
-        KeyMetric.RESPIRATORY to { m ->
-            val today = d?.respRateBpm
-            val carried = today ?: carriedDay?.respRateBpm
-            SparkStatTile(
-                modifier = m,
+        KeyMetric.RESPIRATORY to run {
+            val v = d?.respRateBpm ?: carriedDay?.respRateBpm
+            KeyTileData(
                 label = "Respiratory",
-                value = carried?.let { String.format(Locale.US, "%.1f", it) } ?: NO_DATA,
-                caption = if (today != null) "rpm" else carried?.let { carriedVitalCaption },
-                accent = carried?.let { Palette.accent } ?: Palette.textTertiary,
-                spark = w.resp,
-                sparkColor = Palette.accent,
+                value = v?.let { String.format(Locale.US, "%.1f", it) } ?: NO_DATA,
+                unit = if (v != null) "rpm" else "",
+                tint = Palette.accent,
+                frac = v?.let { (it / 24.0).coerceIn(0.0, 1.0) },
             )
         },
-        KeyMetric.STEPS to { m ->
-            // Steps: prefer a REAL count, the on-device WHOOP 5/MG @57 counter (DailyMetric.steps), then
-            // the steps imported from Apple Health / Health Connect for the day. Only when a day has
-            // NEITHER do we fall back to the on-device ESTIMATE (steps_est) a WHOOP 4.0 user gets, flagged
-            // "est." so it's never mistaken for a measured count, a 4.0 counts steps in the official
-            // WHOOP app but doesn't expose them to NOOP over Bluetooth. A day with none shows "No Data".
-            // (#107, #150)
+        KeyMetric.STEPS to run {
+            // Steps precedence (unchanged): on-device count → imported → estimate. (#107/#150)
             val realSteps = d?.steps ?: importedStepsForDay
             val steps = realSteps ?: estimatedStepsForDay
-            SparkStatTile(
-                modifier = m,
+            KeyTileData(
                 label = "Steps",
                 value = steps?.let { intString(it.toDouble()) } ?: NO_DATA,
-                // An estimated day reads "est." plus the calibration STATUS (k / days / confidence) so a
-                // frozen-looking estimate self-explains (#760/#792); the number is never taken as a measured
-                // count. H10: with no count at all, say steps are still building today rather than a
-                // captionless "No Data" (today only; a past day with no steps stays a bare dash).
-                caption = when {
-                    realSteps != null -> "steps"
-                    estimatedStepsForDay != null -> stepsEstimateCaption
-                    else -> buildingHint(KeyMetric.STEPS, isToday)
-                },
-                accent = steps?.let { Palette.metricCyan } ?: Palette.textTertiary,
-                spark = emptyList(),
-                sparkColor = Palette.metricCyan,
-                // #316 / @63, a REAL (measured) day with a known activity class shows a small still/walk/run
-                // glyph in the label row, so the tile quietly says what the wrist was doing. Only for a measured
-                // count (never an estimate) and only when the class is known; mirrors the iOS Steps-tile icon.
-                trailingIcon = if (realSteps != null) stepActivityClassForDay else null,
+                unit = "",
+                tint = Palette.metricCyan,
+                frac = steps?.let { (it / 10000.0).coerceIn(0.0, 1.0) },
             )
         },
-        KeyMetric.WEIGHT to { m ->
-            // Latest Apple Health / Health Connect body weight, else the SI profile weight (#107). The
-            // caption stays honest, "from profile" only when we fell back. Always shown in the user's
-            // chosen units via the shared UnitFormatter (matches AppleHealthScreen's weight tile).
+        KeyMetric.WEIGHT to run {
             val weight = weightTile(latestWeightKg, profileWeightKg, unitSystem)
-            SparkStatTile(
-                modifier = m,
+            KeyTileData(
                 label = "Weight",
                 value = weight.value,
-                caption = weight.caption,
-                accent = Palette.accent,
-                spark = emptyList(),
-                sparkColor = Palette.accent,
+                unit = "",
+                tint = Palette.accent,
+                frac = null,
             )
         },
-        KeyMetric.CALORIES to { m ->
-            // On-device APPROXIMATE whole-day active+resting energy from HR alone (DailyMetric
-            // .activeKcalEst). A heart-rate estimate, not cloud/clinical parity, shown rounded. (#107)
-            SparkStatTile(
-                modifier = m,
-                label = "Calories",
-                value = d?.activeKcalEst?.let { "${intString(it)} kcal" } ?: NO_DATA,
-                caption = d?.activeKcalEst?.let { "active · est." },
-                accent = d?.activeKcalEst?.let { Palette.metricAmber } ?: Palette.textTertiary,
-                spark = emptyList(),
-                sparkColor = Palette.metricAmber,
-            )
-        },
+        KeyMetric.CALORIES to KeyTileData(
+            label = "Calories",
+            value = d?.activeKcalEst?.let { intString(it) } ?: NO_DATA,
+            unit = if (d?.activeKcalEst != null) "kcal" else "",
+            tint = Palette.metricAmber,
+            frac = d?.activeKcalEst?.let { (it / 800.0).coerceIn(0.0, 1.0) },
+        ),
     )
 
-    // Resolve the enabled tiles to their builders, dropping any unknown key defensively.
-    val allTiles = enabledMetrics.mapNotNull { builders[it] }
+    // Resolve the enabled tiles to their descriptors, dropping any unknown key defensively.
+    val allTiles = enabledMetrics.mapNotNull { descriptors[it] }
     // S5: slice from the FRONT of the saved order so a pinned/selected tile is never dropped or reordered
     // (#251); only the tail folds behind the expander. Mirrors the iOS visibleKeyMetrics prefix(cap).
     val hasOverflow = allTiles.size > METRICS_COLLAPSED_CAP
     val tiles = if (metricsExpanded || !hasOverflow) allTiles else allTiles.take(METRICS_COLLAPSED_CAP)
 
-    // Two-column grid built from rows so tile heights stay uniform (mirrors the
-    // macOS adaptive grid; a fixed 2-up layout reads well on phone widths).
-    Column(verticalArrangement = Arrangement.spacedBy(Metrics.gap)) {
-        tiles.chunked(2).forEach { rowTiles ->
-            Row(horizontalArrangement = Arrangement.spacedBy(Metrics.gap)) {
-                rowTiles.forEach { tile -> tile(Modifier.weight(1f)) }
-                if (rowTiles.size == 1) Spacer(Modifier.weight(1f))
+    // iOS `keyMetricsSection` LazyVGrid: 3 columns, spacing 8. Build from rows so tile heights tile uniformly
+    // and a partial last row pads with empty weight so the columns stay aligned.
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        tiles.chunked(3).forEach { rowTiles ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                rowTiles.forEach { tile -> LiquidKeyTile(tile, modifier = Modifier.weight(1f)) }
+                repeat(3 - rowTiles.size) { Spacer(Modifier.weight(1f)) }
             }
         }
-        // S5: the "Show all metrics" / "Show fewer" expander. Toggles visibility only, never WHICH tiles
-        // are enabled or their order (that stays the #251 editor's job). Mirrors iOS metricsExpander.
+        // S5: the "Show all metrics" / "Show fewer" expander — a centered link like iOS. Toggles visibility
+        // only, never WHICH tiles are enabled or their order (that stays the #251 editor's job).
         if (hasOverflow) {
             val hidden = allTiles.size - METRICS_COLLAPSED_CAP
             TextButton(
@@ -3900,7 +4103,7 @@ private fun MetricGrid(
             ) {
                 Text(
                     if (metricsExpanded) "Show fewer" else "Show all metrics ($hidden)",
-                    style = NoopType.footnote,
+                    style = NoopType.subhead,
                 )
                 Spacer(Modifier.width(4.dp))
                 Icon(
@@ -3910,6 +4113,65 @@ private fun MetricGrid(
                 )
             }
         }
+    }
+}
+
+/** One compact Key-Metrics tile's data: iOS `ktile`(label, value, unit, tint, frac). */
+private data class KeyTileData(
+    val label: String,
+    val value: String,
+    val unit: String,
+    val tint: Color,
+    val frac: Double?,
+)
+
+/**
+ * One iOS `ktile`: a compact 3-column tile — a 9sp / +1.2 overline label, the value (number 17) + small
+ * unit (caption), and a thin 8dp [LiquidTube] fill bar tinted [KeyTileData.tint] to [KeyTileData.frac].
+ * Flat surfaceRaised fill + a 16dp-corner hairline (iOS ktile background), padding 12h / 11v. Replaces the
+ * old tall 2-column SparkStatTile. A No-Data value dims and the tube reads empty.
+ */
+@Composable
+private fun LiquidKeyTile(data: KeyTileData, modifier: Modifier = Modifier) {
+    val hasValue = data.value != NO_DATA
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .frostedCardSurface(cornerRadius = 16.dp)
+            .padding(horizontal = 12.dp, vertical = 11.dp)
+            .semantics { contentDescription = "${data.label} ${data.value} ${data.unit}".trim() },
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            data.label.uppercase(),
+            style = NoopType.overline.copy(fontSize = 9.sp, letterSpacing = 1.2.sp),
+            color = Palette.textTertiary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                data.value,
+                style = NoopType.number(17f),
+                color = if (hasValue) Palette.textPrimary else Palette.textTertiary,
+                maxLines = 1,
+            )
+            if (data.unit.isNotEmpty() && hasValue) {
+                Text(
+                    " ${data.unit}",
+                    style = NoopType.caption,
+                    color = Palette.textPrimary,
+                    maxLines = 1,
+                )
+            }
+        }
+        LiquidTube(
+            frac = data.frac ?: 0.0,
+            tint = data.tint,
+            height = 8.dp,
+            animated = false,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
@@ -4642,10 +4904,17 @@ private fun TodaySourcesSection(
         // Collapsed: one tappable "Synced from: ..." line. Health Connect folds under the "Apple Watch"
         // bucket in the summary (both are the phone's health store to the audience); the expanded card
         // still lists every source by name, so no provenance detail is lost.
+        val collapsedInteraction = remember { MutableInteractionSource() }
         NoopCard(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClickLabel = "Show what NOOP is synced from", onClick = onToggle),
+                .liquidPress(collapsedInteraction)
+                .clickable(
+                    interactionSource = collapsedInteraction,
+                    indication = null,
+                    onClickLabel = "Show what NOOP is synced from",
+                    onClick = onToggle,
+                ),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -5294,7 +5563,7 @@ private fun workoutCaption(row: WorkoutRow): String {
     val date = workoutDateFmt.format(Instant.ofEpochSecond(row.startTs))
     val start = workoutTimeFmt.format(Instant.ofEpochSecond(row.startTs))
     return if (row.endTs > row.startTs) {
-        "$date · $start–${workoutTimeFmt.format(Instant.ofEpochSecond(row.endTs))}"
+        "$date · $start - ${workoutTimeFmt.format(Instant.ofEpochSecond(row.endTs))}"
     } else {
         "$date · $start"
     }

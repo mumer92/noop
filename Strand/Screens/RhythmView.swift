@@ -308,6 +308,9 @@ struct RhythmView: View {
             // methodology card). The LazyVStack path builds the off-screen cards — including the scatter
             // plot's point set — on demand; byte-identical layout.
             lazy: true,
+            // Liquid finish: the day-of-sky backdrop, so the visualization sits in the same liquid
+            // atmosphere as Today. The calm Rest-blue world of the cards stays unchanged over it.
+            topBackground: liquidScaffoldSky(),
             trailing: { closeButton }
         ) {
             SourceBadge("Experimental", tint: StrandPalette.restColor)
@@ -355,8 +358,44 @@ struct RhythmView: View {
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                // Two calm liquid readouts of the night's real descriptive fractions (both 0–1, neutral —
+                // never a verdict): the beat-to-beat variation index and the extra/skipped fraction. The
+                // liquid tube idiom, drawn in the same Rest-blue world so it never reads as alarm. The
+                // stats grid below still prints every exact number; these are a descriptive picture.
+                if let hw = headlineWindow {
+                    VStack(spacing: 8) {
+                        liquidStatRow("Beat-to-beat variation", frac: hw.normRmssd,
+                                      tint: StrandPalette.restBright)
+                        liquidStatRow("Extra or skipped beats", frac: hw.ectopicFraction,
+                                      tint: StrandPalette.restColor)
+                    }
+                    .padding(.top, 2)
+                }
             }
         }
+    }
+
+    /// One calm liquid readout: an UPPERCASE overline label, the fraction as a percent, and a posed
+    /// liquid tube filled to that fraction (clamped 0–1). Descriptive only — never a verdict, never red.
+    /// Static tube so a page of them costs one cached frame each. Decorative for VoiceOver (the numbers
+    /// grid carries the meaning).
+    private func liquidStatRow(_ label: LocalizedStringKey, frac: Double?, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(label)
+                    .font(StrandFont.overline)
+                    .tracking(StrandFont.overlineTracking)
+                    .textCase(.uppercase)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                Spacer()
+                Text(percent(frac))
+                    .font(StrandFont.captionNumber)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            }
+            LiquidTube(frac: max(0, min(1, frac ?? 0)), tint: tint, height: 8, animated: false)
+        }
+        .accessibilityHidden(true)
     }
 
     // MARK: Plot card — the Poincaré scatter + the "comet vs cloud" reading note

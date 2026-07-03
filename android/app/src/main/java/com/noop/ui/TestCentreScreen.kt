@@ -37,6 +37,8 @@ import com.noop.BuildConfig
 import com.noop.analytics.Baselines
 import com.noop.ble.PuffinExperiment
 import com.noop.ble.WhoopModel
+import com.noop.testcentre.CaptureAccumulator
+import com.noop.testcentre.CaptureKind
 import com.noop.testcentre.DisplayPerformanceMonitor
 import com.noop.testcentre.ReportReviewGate
 import com.noop.testcentre.TestBundleAssembler
@@ -115,6 +117,10 @@ fun TestCentreScreen(vm: AppViewModel) {
                         mode = mode,
                         active = testCentre.active(mode.domain),
                         startedAtSeconds = testCentre.startedAt(mode.domain),
+                        // #965: the shareable strap log the report exports, so the row's "K of N" is the
+                        // HONEST per-mode captured-day count (CaptureAccumulator), not an elapsed-clock proxy.
+                        // Recomputes with `live` (collected above) so the count updates as new days land.
+                        logText = vm.ble.exportLogText(),
                         onToggle = { on ->
                             if (on) testCentre.activate(mode.domain) else testCentre.deactivate(mode.domain)
                             // Display & Performance owns a live frame monitor. It must run ONLY while the
@@ -211,17 +217,32 @@ private fun TestModeRow(
     mode: TestMode,
     active: Boolean,
     startedAtSeconds: Long?,
+    logText: String,
     onToggle: (Boolean) -> Unit,
     onReport: () -> Unit,
 ) {
     var on by remember { mutableStateOf(active) }
     val elapsed = startedAtSeconds?.let { (System.currentTimeMillis() / 1000.0) - it }
+    // #965: HONEST per-mode captured-day count for a guided row (distinct days THIS mode produced its own
+    // trace on), read from the same log the report exports, so each active mode accumulates its OWN count
+    // instead of every guided row sharing one elapsed number. null for a toggle mode (no "K of N") / when off.
+    val capturedUnits: Int? =
+        if (on && mode.capture is CaptureKind.Guided) {
+            CaptureAccumulator.capturedDays(
+                domain = mode.domain,
+                reportText = logText,
+                tzOffsetSeconds =
+                    (java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000).toLong(),
+            )
+        } else {
+            null
+        }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(mode.title, style = NoopType.body, color = Palette.textPrimary)
                 Text(
-                    TestCentreLayout.statusText(mode, on, elapsed),
+                    TestCentreLayout.statusText(mode, on, elapsed, capturedUnits),
                     style = NoopType.footnote,
                     color = Palette.textSecondary,
                 )

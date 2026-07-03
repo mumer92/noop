@@ -365,7 +365,8 @@ final class IntelligenceEngine: ObservableObject {
         // composite. The hr/rr/resp/gravity arrays go out of scope each iteration (memory stays bounded).
         var scoredNights: [(daily: DailyMetric, strain: Double?, cachedSleep: [CachedSleepSession],
                             workouts: [ExerciseSession], nightlySkin: Double?,
-                            sessionMotion: [Int: [Double]])] = []
+                            sessionMotion: [Int: [Double]],
+                            sessionSleepState: [Int: [Int]])] = []
         // Nightly values harvested in pass 1, keyed by day, to seed the pass-2 baseline.
         var nightlyHrvByDay: [String: Double?] = [:]
         var nightlyRhrByDay: [String: Double?] = [:]
@@ -460,6 +461,11 @@ final class IntelligenceEngine: ObservableObject {
                 let grav = (try? await store.gravitySamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
                 let steps = (try? await store.stepSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
                 let skin = (try? await store.skinTempSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
+                // #938: the strap family that WROTE this owner's skin-temp rows, so analyzeDay converts the raw
+                // register on the right scale (5/MG banks centidegrees, a WHOOP 4.0 v24 banks a raw ADC). The
+                // registry knows each device's model; unknown/non-WHOOP owners fall back to `.whoop5` (the prior
+                // /100 behaviour), so this only changes the mapping for a device positively identified as a 4.0.
+                let skinFamily = Self.skinTempFamily(forOwner: owner, devices: regDevices)
                 // Wrist-wear events in the night window, paired into off-wrist [start, end) intervals for the
                 // off-wrist sleep backstop (#500). The HR-gap proxy in the stager is the always-on guard;
                 // these explicit intervals sharpen it under the FRACTIONAL rule (#504) , a session is dropped
@@ -489,14 +495,22 @@ final class IntelligenceEngine: ObservableObject {
                 // detector see the whole day, so a 5 pm run shows up on the same day.
                 let dayGrav = (try? await store.gravitySamples(deviceId: owner, from: dayMid, to: dayEnd, limit: 200_000)) ?? []
 
-                // CONSUME (#531 / H8): the prior pass's persisted v18 BAND sleep_state for sessions overlapping
-                // the night window, expanded to timestamped (ts, state) samples on the 30 s grid, so the H7
-                // morning-stillness guard can confirm a borderline re-onset against the strap's OWN scored band.
-                // Read under `computedId` (where the prior pass banded its detected sessions); empty on the first
-                // pass (no banded sessions yet) → the guard simply falls back to the HR bar. Honest: only real
-                // banded "asleep" epochs rescue a block, never a fabricated one.
-                let bandSleepState = await Self.bandSleepStateSamples(computedId: computedId,
-                                                                      from: from, to: to, store: store)
+                // CONSUME (#531 / #175): the strap's OWN band sleep_state for the night window as timestamped
+                // (ts, state) samples, so the H7 morning-stillness guard can confirm a borderline re-onset
+                // against the strap's OWN scored band, AND analyzeDay can grid it per session for persistence.
+                // #175 wired the RAW `sleepStateSample` stream end to end: read it directly from `owner` (the
+                // strap that owns this night) so it is available THIS pass, not one pass behind, and it comes
+                // from the real offload rather than a read-its-own-write of the per-session JSON. Empty on a
+                // WHOOP 4.0 (no band_sleep_state stream) or an unbanded window → the guard falls back to the HR
+                // bar and no per-session state is persisted. Honest: only real banded epochs are ever surfaced.
+                // Fall back to the prior pass's persisted per-session state when the raw stream is absent (an
+                // older DB banded before the v21 stream landed), so a legacy install keeps the H7 confirm.
+                var bandSleepState = (try? await store.sleepStateSamples(deviceId: owner, from: from, to: to))?
+                    .map { (ts: $0.ts, state: $0.state) } ?? []
+                if bandSleepState.isEmpty {
+                    bandSleepState = await Self.bandSleepStateSamples(computedId: computedId,
+                                                                     from: from, to: to, store: store)
+                }
 
                 // #690: read the experimental-V2 toggle ONCE here (off the detached executor, matching the
                 // Repository self-heal call site) and capture the Bool, so the Settings toggle now drives the
@@ -514,6 +528,7 @@ final class IntelligenceEngine: ObservableObject {
                                                      steps: steps, dayHr: dayHr, daySteps: daySteps,
                                                      dayGravity: dayGrav,
                                                      skinTemp: skin,
+                                                     skinTempFamily: skinFamily,   // #938
                                                      profile: up, baselines: baselines1, maxHROverride: maxHR,
                                                      tzOffsetSeconds: tzOffset, wristOff: wristOff,
                                                      habitualMidsleepSec: habitualMidsleepSec,
@@ -590,7 +605,8 @@ final class IntelligenceEngine: ObservableObject {
             for line in scan.stepsTrace { diagnosticSink?(line, .steps) }
             scoredNights.append((daily: res.daily, strain: res.strain, cachedSleep: res.cachedSleep,
                                  workouts: res.workouts, nightlySkin: res.nightlySkinTempC,
-                                 sessionMotion: res.sessionMotionByStart))
+                                 sessionMotion: res.sessionMotionByStart,
+                                 sessionSleepState: res.sessionSleepStateByStart))
         }
 
         // ── Seed the baseline from the UNION of imported nightly history + the values just computed.
@@ -703,6 +719,11 @@ final class IntelligenceEngine: ObservableObject {
         // CAPTURE-B (#814/#799): the universal dayOwner line rides every export, so its gate is "ANY mode
         // active" (TestCentre.active(.universal) == anyActive). Read once here, like the other gates.
         let universalTraceActive = TestCentre.active(.universal)
+        // Workouts & GPS test mode (#975): read the zero-cost gate ONCE before the scoring loop so the
+        // detected-bout persist/drop decision can emit ONE `.workouts` line per derived bout. Without this
+        // the auto path produced NO trace at all (the "mode was on but produced NO trace" report), so an
+        // "auto workout appeared then vanished" could not be explained from an export. Diagnostic only.
+        let workoutsTraceActive = TestCentre.active(.workouts)
         for night in scoredNights {
             let daily = sleepEditedDaily(night.daily, detected: night.cachedSleep, editsByStart: editsByStart,
                                          habitualMidsleepSec: habitualMidsleepSec)
@@ -764,16 +785,32 @@ final class IntelligenceEngine: ObservableObject {
             }
             cachedSleep.append(contentsOf: night.cachedSleep)
             // Persist the detected workouts the pipeline already computes (previously discarded).
-            // Skip any bout overlapping a real imported workout so import+wear users don't
+            // Skip any bout overlapping a real imported/manual workout so import+wear users don't
             // double-count. sport = "detected"; energyKcal is the APPROXIMATE Keytel/BMR total.
             for s in night.workouts {
-                if realWorkouts.contains(where: { s.start < $0.endTs && $0.startTs < s.end }) { continue }
+                let durMin = max(0, (s.end - s.start) / 60)
+                let avgBpm = Int(s.avgHR)
+                // The overlap test is bare time overlap (any source), so a detected bout collapses against a
+                // manual session even though their SPORTS differ ("detected" vs the user's sport) , the
+                // #975 "two workouts, one vanished" seam. Find the collider so the trace can name its source.
+                if let hit = realWorkouts.first(where: { s.start < $0.endTs && $0.startTs < s.end }) {
+                    if workoutsTraceActive {
+                        diagnosticSink?(WorkoutsTrace.detectedBoutLine(
+                            verdict: "droppedOverlap", durMin: durMin, avgBpm: avgBpm,
+                            overlapSource: WorkoutSource.sourceLabel(hit)), .workouts)
+                    }
+                    continue
+                }
                 workoutRows.append(WorkoutRow(startTs: s.start, endTs: s.end,
                                               sport: "detected", source: computedId,
                                               durationS: s.durationS, energyKcal: s.caloriesKcal,
-                                              avgHr: Int(s.avgHR), maxHr: s.peakHR,
+                                              avgHr: avgBpm, maxHr: s.peakHR,
                                               strain: s.strain, distanceM: nil,
                                               zonesJSON: nil, notes: nil))
+                if workoutsTraceActive {
+                    diagnosticSink?(WorkoutsTrace.detectedBoutLine(
+                        verdict: "persisted", durMin: durMin, avgBpm: avgBpm), .workouts)
+                }
             }
         }
 
@@ -1077,6 +1114,21 @@ final class IntelligenceEngine: ObservableObject {
         for (start, motion) in motionByStart {
             _ = try? await store.persistSessionMotion(deviceId: computedId, sessionStart: start, motionEpochs: motion)
         }
+        // ── Persist per-epoch BAND sleep_state (#175) beside each kept session's stagesJSON ──────────────
+        // This is the source `sessionSleepStateJSON` lacked (v7.7.0 finding: the write path had no producer
+        // because the raw stream was dropped at extraction). Now analyzeDay grids the RAW `sleepStateSample`
+        // stream per session; persist it here so the NEXT pass's `bandSleepStateSamples` read (the H7 confirm)
+        // and the display can see the strap's OWN scored band. ONLY for kept (not edited/dismissed) sessions;
+        // a session with no band samples was omitted (no key) and stays NULL — an absent signal stays absent.
+        var sleepStateByStart: [Int: [Int]] = [:]
+        for night in scoredNights {
+            for (start, states) in night.sessionSleepState where keptStarts.contains(start) {
+                sleepStateByStart[start] = states
+            }
+        }
+        for (start, states) in sleepStateByStart {
+            _ = try? await store.persistSessionSleepState(deviceId: computedId, sessionStart: start, states: states)
+        }
         // ── Overlap-aware banked-sleep heal (#899) ────────────────────────────────────────────────────
         // An unstable strap clock re-banks the SAME night under a shifted timebase, so successive passes
         // detect it at shifted bounds and the upsert above lands a SECOND row beside the stale one (the
@@ -1201,6 +1253,18 @@ final class IntelligenceEngine: ObservableObject {
         return DayOwnerResolver.resolve(day: day, lockedOwner: nil, candidates: candidates) ?? fallbackDeviceId
     }
 
+    /// The strap family that wrote `owner`'s skin-temp rows (#938), so the nightly funnel converts the raw
+    /// register on the right scale. The registry stores each device's model string; a positively-identified
+    /// WHOOP 4.0 maps to `.whoop4` (raw-ADC skin-temp map), and EVERYTHING else — a 5/MG, a non-WHOOP source
+    /// (Oura/Apple Watch/etc. whose imported skin temp is already °C, not a strap register), or an unknown
+    /// owner not in the snapshot — falls back to `.whoop5`, the prior /100 behaviour. So this only changes
+    /// the mapping for a device we KNOW is a 4.0, never risking a wrong scale on anything else.
+    nonisolated static func skinTempFamily(forOwner owner: String, devices: [PairedDevice]) -> DeviceFamily {
+        guard let model = devices.first(where: { $0.id == owner })?.model,
+              WhoopModel(rawValue: model) == .whoop4 else { return .whoop5 }
+        return .whoop4
+    }
+
     /// #137: re-score under-sampled manual workouts. A `manual` workout is scored from the live HR
     /// captured during the session; on a 5/MG that stream is sparse, so calories/strain land near zero.
     /// The strap banks its own HR and offloads it on sync , once that denser HR covers the workout's
@@ -1214,16 +1278,24 @@ final class IntelligenceEngine: ObservableObject {
         else { return }
         let hrMax = Double(profile.hrMax)
         var updated: [WorkoutRow] = []
+        // A manual row is eligible when it looks under-scored (negligible kcal, #137) OR it's missing
+        // strain (the merged-workout case, where kcal is the SUM of inputs so it never looks under-scored
+        // yet Effort stays blank forever). `improves` then accepts a strain-only gain for the latter.
         for row in rows where row.source == "manual"
-            && ManualWorkoutRescore.looksUnderScored(currentKcal: row.energyKcal) {
+            && (ManualWorkoutRescore.looksUnderScored(currentKcal: row.energyKcal) || row.strain == nil) {
             guard let samples = try? await store.hrSamples(deviceId: deviceId, from: row.startTs,
                                                            to: row.endTs, limit: 20_000),
                   let s = ManualWorkoutRescore.scored(windowSamples: samples, profile: up, hrMax: hrMax),
-                  ManualWorkoutRescore.improves(s, over: row.energyKcal)
+                  ManualWorkoutRescore.improves(s, over: row.energyKcal, currentStrain: row.strain,
+                                                allowStrainOnlyFill: true)
             else { continue }
+            // Never lower a summed kcal: only take the recomputed kcal when it genuinely beats the stored
+            // value; a strain-only fill (merged row) keeps the existing summed energyKcal.
+            let kcalBeatsStored = (s.kcal ?? 0) > (row.energyKcal ?? 0) + ManualWorkoutRescore.improvementMarginKcal
+            let energyKcal = kcalBeatsStored ? s.kcal : row.energyKcal
             updated.append(WorkoutRow(
                 startTs: row.startTs, endTs: row.endTs, sport: row.sport, source: row.source,
-                durationS: row.durationS, energyKcal: s.kcal, avgHr: s.avgHr, maxHr: s.maxHr,
+                durationS: row.durationS, energyKcal: energyKcal, avgHr: s.avgHr, maxHr: s.maxHr,
                 strain: s.strain, distanceM: row.distanceM, zonesJSON: row.zonesJSON, notes: row.notes))
         }
         if !updated.isEmpty { _ = try? await store.upsertWorkouts(updated, deviceId: deviceId) }

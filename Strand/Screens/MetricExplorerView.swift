@@ -135,6 +135,19 @@ enum ExploreRange: Int, CaseIterable, Identifiable, Hashable {
     }
 }
 
+/// Pure #943 chip-coercion rule, extracted so it can be pinned by a test (the Swift twin of Android's
+/// `coercedVitalRange` in HealthScreen.kt). Resolves a stored selection NON-DESTRUCTIVELY: an unlocked
+/// selection is kept verbatim; a LOCKED one renders as the largest unlocked range with a real finite
+/// window (`days != nil`, so never ALL) whose rawValue is <= the selection, else `.week`. Coercing a
+/// locked default to ALL would jump a calibrating user to the everything view, so it is excluded.
+enum ExploreRangeGating {
+    static func coerced(selection: ExploreRange, isUnlocked: (ExploreRange) -> Bool) -> ExploreRange {
+        if isUnlocked(selection) { return selection }
+        return [ExploreRange.year, .half, .quarter, .month, .week]
+            .first { $0.days != nil && $0.rawValue <= selection.rawValue && isUnlocked($0) } ?? .week
+    }
+}
+
 // MARK: - Root: categorized list
 
 /// The "Explore" picker — categories as sections, metrics as rows, each pushing a
@@ -170,7 +183,9 @@ struct MetricExplorerView: View {
         // cards), so LazyVStack genuinely builds the off-screen category cards on demand. No
         // `staggeredAppear` here and identical column alignment/spacing (20) + per-child bottom padding,
         // so the layout is byte-identical to the eager VStack.
-        ScreenScaffold(title: "Explore", subtitle: "Every signal, one tap deep.", lazy: true) {
+        ScreenScaffold(title: "Explore", subtitle: "Every signal, one tap deep.",
+                       onRefresh: { await repo.refresh() }, lazy: true,
+                       topBackground: liquidScaffoldSky()) {
             // A quiet, non-blocking hint while the empty-dot probe runs its first pass. The rows below
             // render in full immediately regardless — this only reassures during the scan, and never
             // leaves the screen reading as a bare/empty list before the probe lands (#199).
@@ -191,7 +206,9 @@ struct MetricExplorerView: View {
             } label: {
                 deepTimelineRow
             }
-            .buttonStyle(StrandPressableButtonStyle(cornerRadius: NoopMetrics.cardRadius))
+            // Liquid press language: the settle-inward LiquidPressStyle (the same physical response the
+            // Today / batch-1 cards use), replacing the classic StrandPressableButtonStyle.
+            .buttonStyle(LiquidPressStyle())
             #if os(iOS)
             .simultaneousGesture(TapGesture().onEnded { StrandHaptic.selection.play() })
             #endif
@@ -201,7 +218,9 @@ struct MetricExplorerView: View {
                 let metrics = MetricCatalog.inCategory(category)
                 if !metrics.isEmpty {
                     VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-                        SectionHeader("\(category)", overline: "Category",
+                        // Localized at the render site only; `category` itself stays the raw
+                        // English identifier that `inCategory` filters on.
+                        SectionHeader("\(MetricCatalog.categoryDisplayName(category))", overline: "Category",
                                       trailing: "\(metrics.count)")
                         NoopCard(padding: 0) {
                             VStack(spacing: 0) {
@@ -216,9 +235,10 @@ struct MetricExplorerView: View {
                                         MetricRow(metric: metric,
                                                   isEmpty: emptyByID[metric.id] ?? false)
                                     }
-                                    // Full-row press-down feedback (square corners — the row spans the
-                                    // card edge-to-edge, dividers between).
-                                    .buttonStyle(StrandPressableButtonStyle(cornerRadius: 0))
+                                    // Full-row press-down feedback in the liquid language — the settle-inward
+                                    // LiquidPressStyle (a transform, so it works edge-to-edge with dividers
+                                    // between, no corner radius to match). Matches Today's tappable rows.
+                                    .buttonStyle(LiquidPressStyle())
                                     #if os(iOS)
                                     // Light selection tick on tap; the simultaneousGesture leaves the
                                     // NavigationLink push intact.
@@ -365,8 +385,8 @@ private struct MetricRow: View {
         .accessibilityElement(children: .combine)
         // Whole-string key per variant (never a concatenated localized tail on an a11y label).
         .accessibilityLabel(isEmpty
-            ? "\(metric.title), \(unitLabel.isEmpty ? metric.category : unitLabel), no data"
-            : "\(metric.title), \(unitLabel.isEmpty ? metric.category : unitLabel)")
+            ? "\(metric.title), \(unitLabel.isEmpty ? MetricCatalog.categoryDisplayName(metric.category) : unitLabel), no data"
+            : "\(metric.title), \(unitLabel.isEmpty ? MetricCatalog.categoryDisplayName(metric.category) : unitLabel)")
         .accessibilityAddTraits(.isButton)
     }
 }
@@ -432,11 +452,60 @@ struct MetricDetailView: View {
     /// The range actually shown: the SELECTED range whenever its window holds ≥1
     /// point, otherwise the smallest LARGER range that does. So switching ranges is
     /// always visibly distinct when data allows, and only sparse windows widen.
+    /// The range the chips + caption ACTUALLY describe, resolved NON-DESTRUCTIVELY from the stored
+    /// `range` (#943, true cross-platform lockstep with Android's effectiveVitalRange). We never
+    /// overwrite the @State selection - a locked default (`range == .month` with under a week of
+    /// history) simply RENDERS as the largest unlocked range with a real finite window that is <= the
+    /// selection, else `.week`. NOT `.all`: coercing a locked default to ALL would jump a calibrating
+    /// user to the everything view. When the stored range is itself unlocked it is used verbatim, so
+    /// once history grows the selection un-coerces on its own with no snap-back.
+    private var coercedSelection: ExploreRange {
+        ExploreRangeGating.coerced(selection: range, isUnlocked: isUnlocked)
+    }
+
+    /// The pill's selection binding: it HIGHLIGHTS the coerced selection (so a locked default shows the
+    /// unlocked chip that is actually rendering) but a user tap writes straight to the stored @State
+    /// `range`. Reads never mutate state, so this stays non-destructive.
+    private var selectionBinding: Binding<ExploreRange> {
+        Binding(get: { coercedSelection }, set: { range = $0 })
+    }
+
     private var effectiveRange: ExploreRange {
-        guard !series.isEmpty else { return range }
-        for r in range.widening where !slice(for: r).isEmpty { return r }
+        guard !series.isEmpty else { return coercedSelection }
+        for r in coercedSelection.widening where !slice(for: r).isEmpty { return r }
         return .all
     }
+
+    /// Whole days between the first and last reading (0 for a single point). The
+    /// UTC-fixed day parser makes the Int truncation exact.
+    private var historySpanDays: Int {
+        guard let firstDay = series.first?.day, let lastDay = series.last?.day,
+              let first = parseDay(firstDay), let last = parseDay(lastDay) else { return 0 }
+        return Int(last.timeIntervalSince(first) / 86_400)
+    }
+
+    /// Whether a range chip is selectable (#943, reimplemented from ryanbr's PR): a longer
+    /// range only unlocks once the history span EXCEEDS the previous window, i.e. once it
+    /// would actually show more than the range below it. Before that, every window is taken
+    /// relative to the latest point, so thin history sat inside all of them and the six chips
+    /// drew byte-identical charts (a week of data stretched full-width under a 1Y label).
+    /// W (the shortest) and ALL (the honest everything view) are never gated, so a calibrating
+    /// user always has a selectable range; until the series loads (or with no history at all)
+    /// nothing is gated, since the empty state deliberately keeps the full range bar for context.
+    private func isUnlocked(_ r: ExploreRange) -> Bool {
+        guard loaded, !series.isEmpty else { return true }
+        switch r {
+        case .week, .all: return true
+        case .month:   return historySpanDays > ExploreRange.week.rawValue
+        case .quarter: return historySpanDays > ExploreRange.month.rawValue
+        case .half:    return historySpanDays > ExploreRange.quarter.rawValue
+        case .year:    return historySpanDays > ExploreRange.half.rawValue
+        }
+    }
+
+    /// True when at least one range chip is locked; drives the one-line unlock hint under
+    /// the caption, so the dimmed chips read as "not yet" rather than broken.
+    private var hasLockedRanges: Bool { !ExploreRange.allCases.allSatisfy(isUnlocked) }
 
     /// The window immediately preceding the active one (equal length, by day count).
     private func previousWindow(effectiveRange: ExploreRange,
@@ -483,7 +552,10 @@ struct MetricDetailView: View {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
                 if loaded && series.isEmpty {
                     // No data in the entire history — keep the range bar for context, then the
-                    // honest empty state (no scenic hero floating over nothing).
+                    // honest empty state (no scenic hero floating over nothing). Deliberately
+                    // NOT gated by the #943 chip locking: with zero data there is no chart for
+                    // the ranges to misrepresent, and hiding the bar here would regress this
+                    // "for context" intent.
                     rangeBar(effectiveRange: effRange, windowed: win, windowFellBack: fellBack)
                     ComingSoon(what: "Import your history first. A WHOOP export in Data Sources fills every metric you can explore here in about a minute.")
                 } else if !loaded {
@@ -519,16 +591,21 @@ struct MetricDetailView: View {
         }
         others = loadedOthers
         loaded = true
+        // #943 selection seam: a locked default (.month with under a week of history) no longer
+        // OVERWRITES @State range - it renders through `coercedSelection` instead (non-destructive,
+        // recomputed every body eval), so a shrinking history re-coerces and a growing one un-coerces
+        // with no snap-back. See `coercedSelection`.
         // First correlation build, now that `series`/`others` exist.
         recomputeCorrelations()
     }
 
     // MARK: Scenic hero
 
-    /// The detail's opening hero: the metric's latest value as either a layered ring
-    /// BevelGauge (for 0–100 scores) or a big SF-Rounded headline number, floated over a
-    /// domain-tinted ScenicHeroBackground, with the category overline, the "as of" line,
-    /// and the range pill. Mirrors TodayView's score-hero idiom.
+    /// The detail's opening hero: the metric's latest value as either the signature liquid
+    /// LiquidVessel gauge (for 0–100 scores, filled to the score with the number counting up over
+    /// it) or a big count-up headline number, floated over a domain-tinted ScenicHeroBackground,
+    /// with the category overline, the "as of" line, and the range pill. Mirrors TodayView's
+    /// liquid score-hero idiom (and Health's Fitness-Age / Vitality vessels).
     @ViewBuilder
     private func heroHeader(effectiveRange: ExploreRange,
                             windowed: [(day: String, value: Double)],
@@ -542,47 +619,78 @@ struct MetricDetailView: View {
         }()
         let fraction = value.flatMap { metricGaugeFraction(metric, value: $0) }
 
-        ZStack(alignment: .top) {
-            ScenicHeroBackground(domain: domain)
-                .clipShape(RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous))
-
-            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-                // Title + range control over the starfield.
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(metric.category.uppercased()).strandOverline()
-                        Text(metric.title)
-                            .font(StrandFont.title2)
-                            .foregroundStyle(StrandPalette.textPrimary)
-                    }
-                    Spacer()
-                    SegmentedPillControl(ExploreRange.allCases, selection: $range) { $0.label }
+        // Gap fix (2026-07-02): draw the starfield as the content's BACKGROUND, not as a
+        // stretching ZStack sibling — an unconstrained ScenicHeroBackground inside a ScrollView filled
+        // the whole viewport and left a huge blank band above the chart. As a .background it sizes to
+        // the hero content, so the number/ring sits directly under the range pill.
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                // Category + title on their OWN full-width row so a long title ("Heart Rate Variability")
+                // is never crushed into a letter-per-line column by the range pill (2026-07-02).
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(MetricCatalog.categoryDisplayName(metric.category).uppercased()).strandOverline()
+                    Text(metric.title)
+                        .font(StrandFont.title2)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                // Range control on its own row beneath the title.
+                SegmentedPillControl(ExploreRange.allCases, selection: selectionBinding,
+                                     isEnabled: isUnlocked) { $0.label }
 
-                // The headline read-out: a ring gauge for 0–100 scores, else a big number.
+                // The headline read-out in the liquid language: for a 0–100 score, the signature
+                // LiquidVessel gauge filled to the score (the same hero idiom as Today's rings / Health's
+                // Fitness-Age + Vitality heroes), with the integer counting up over it and the unit + "as
+                // of" line beneath. For a non-score metric, a big count-up number. The vessel fills from 0
+                // to its fraction on appear (`heroAnimatedFraction`), so it settles once like TodayView's
+                // rings; the number ticks itself. A liquid accent on the ONE headline value, where it reads
+                // well — never over the chart below.
                 HStack {
                     Spacer(minLength: 0)
-                    if let fraction {
-                        BevelGauge(
-                            fraction: fraction,
-                            stops: domain.gradient.stops,
-                            tipColor: domain.bright,
-                            numberText: latest.map { String(Int($0.value.rounded())) } ?? "—",
-                            captionText: metric.unit.isEmpty ? nil : "\(metric.unit)",
-                            stateText: nil,
-                            supporting: asOf,
-                            diameter: 188,
-                            lineWidth: 15,
-                            showsLabel: latest != nil,
-                            animatedFraction: heroAnimatedFraction
-                        )
+                    if let fraction, let v = value {
+                        VStack(spacing: 10) {
+                            ZStack {
+                                // The big hero vessel stays live (animated) — the one sloshing gauge on the
+                                // screen, exactly like the hero gauges on Today.
+                                LiquidVessel(value: heroAnimatedFraction, tint: domain.bright, animated: true)
+                                    .frame(width: 188, height: 188)
+                                    .accessibilityHidden(true)
+                                VStack(spacing: 2) {
+                                    CountUpNumber(value: v, font: StrandFont.rounded(48))
+                                        .foregroundStyle(.white)
+                                        .shadow(color: .black.opacity(0.5), radius: 6, y: 1)
+                                    if !metric.unit.isEmpty {
+                                        Text(metric.unit)
+                                            .font(StrandFont.footnote)
+                                            .foregroundStyle(.white.opacity(0.85))
+                                            .shadow(color: .black.opacity(0.5), radius: 4, y: 1)
+                                    }
+                                }
+                                .allowsHitTesting(false)
+                            }
+                            Text(asOf)
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                        }
+                        // One VoiceOver stop for the hero read-out (the vessel is decorative above).
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(heroValue), \(asOf)")
+                    } else if let v = value {
+                        VStack(spacing: 6) {
+                            CountUpText(value: v, format: { fmt($0) },
+                                        font: StrandFont.number(54),
+                                        color: StrandPalette.textPrimary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.5)
+                            Text(asOf)
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                        }
+                        .padding(.vertical, 18)
                     } else {
                         VStack(spacing: 6) {
                             Text(heroValue)
                                 .font(StrandFont.number(54))
                                 .foregroundStyle(StrandPalette.textPrimary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.5)
                             Text(asOf)
                                 .font(StrandFont.footnote)
                                 .foregroundStyle(StrandPalette.textTertiary)
@@ -601,11 +709,19 @@ struct MetricDetailView: View {
                     .accessibilityLabel(rangeCaption(effectiveRange: effectiveRange,
                                                      windowed: windowed,
                                                      windowFellBack: windowFellBack))
+                // The subtle reason the dimmed chips exist (#943); shown only while some are locked.
+                // Byte-identical wording to the Android HealthScreen's unlock hint.
+                if hasLockedRanges {
+                    Text("Longer ranges unlock as more history builds.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                }
             }
-            .padding(NoopMetrics.cardPadding)
-        }
-        // The hero shows the LATEST available point (range-independent), so the gauge
-        // settles once on appear — like TodayView's rings.
+        .padding(NoopMetrics.cardPadding)
+        .background(ScenicHeroBackground(domain: domain))
+        .clipShape(RoundedRectangle(cornerRadius: NoopMetrics.cardRadius, style: .continuous))
+        // The hero shows the LATEST available point (range-independent), so the vessel fills once on
+        // appear (0 → its fraction) and settles — like TodayView's rings.
         .onAppear {
             withAnimation(.easeOut(duration: 0.9)) {
                 heroAnimatedFraction = fraction ?? 0
@@ -624,13 +740,14 @@ struct MetricDetailView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(metric.category.uppercased()).strandOverline()
+                    Text(MetricCatalog.categoryDisplayName(metric.category).uppercased()).strandOverline()
                     Text(metric.title)
                         .font(StrandFont.title2)
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
                 Spacer()
-                SegmentedPillControl(ExploreRange.allCases, selection: $range) { $0.label }
+                SegmentedPillControl(ExploreRange.allCases, selection: selectionBinding,
+                                     isEnabled: isUnlocked) { $0.label }
             }
             Text(caption)
                 .font(StrandFont.footnote)
@@ -824,20 +941,18 @@ struct MetricDetailView: View {
                 Text(row.metric.title)
                     .font(StrandFont.body)
                     .foregroundStyle(StrandPalette.textPrimary)
-                Text("\(row.metric.category) · n = \(row.n)")
+                Text("\(MetricCatalog.categoryDisplayName(row.metric.category)) · n = \(row.n)")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
             }
             Spacer(minLength: 8)
             HStack(spacing: 10) {
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(StrandPalette.surfaceInset)
-                        Capsule().fill(color)
-                            .frame(width: max(4, geo.size.width * min(abs(row.r), 1.0)))
-                    }
-                }
-                .frame(width: 64, height: 6)
+                // The strength bar as the signature liquid tube — filled to |r|, tinted by the
+                // correlation's sign (positive green / negative red), posed (static) so a list of them
+                // costs one cached frame each. Replaces the flat capsule with the liquid range-bar idiom.
+                LiquidTube(frac: min(abs(row.r), 1.0), tint: color, height: 8, animated: false)
+                    .frame(width: 64)
+                    .accessibilityHidden(true)
                 Text("\(row.r >= 0 ? "+" : "−")\(String(format: "%.2f", abs(row.r)))")
                     .font(StrandFont.number(15))
                     .foregroundStyle(color)
