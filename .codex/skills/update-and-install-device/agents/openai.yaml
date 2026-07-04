@@ -1,0 +1,4 @@
+interface:
+  display_name: "Update NOOP Device Build"
+  short_description: "Pull main and run the personal iPhone build"
+  default_prompt: "Use $update-and-install-device to pull latest main, preserve com.mumer bundle IDs, and run NOOP on my iPhone."

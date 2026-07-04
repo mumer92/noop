@@ -1295,12 +1295,6 @@ struct TodayView: View {
                 AutoWorkoutCard()
                 // Honest, dismissible 12-hourly donation ask, a card in the flow, never a modal.
                 DonationNudgeCard()
-                #if os(iOS)
-                // iOS entry point to Support (donate + contact). macOS opens the same sheet from the
-                // toolbar heart, but a primary tab on iPhone has no nav bar to host a `.toolbar` item,
-                // so the affordance lives in-content here and presents SupportView as an auto-sized sheet.
-                supportRow
-                #endif
                 sourcesSection
             }
             #if os(iOS)
@@ -1357,9 +1351,7 @@ struct TodayView: View {
         }
         #if os(macOS)
         // macOS hosts the Support affordance in the window toolbar (RootView's NavigationSplitView
-        // supplies the toolbar) and presents it as the fixed-width SupportModalOverlay panel. On iOS
-        // this path is unavailable (no nav bar on a primary tab) and the 560pt panel would overflow
-        // iPhone, so the in-content `supportRow` + auto-sized `.sheet` below take over instead.
+        // supplies the toolbar) and presents it as the fixed-width SupportModalOverlay panel.
         .toolbar {
             // Support heart on the LEADING (left) edge of the window toolbar.
             ToolbarItem(placement: .navigation) {
@@ -1526,46 +1518,6 @@ struct TodayView: View {
         // Press-down feedback for the tappable card surface.
         .strandPressable()
     }
-
-    #if os(iOS)
-    // MARK: Support entry point (iOS), the in-content stand-in for the macOS toolbar heart.
-
-    /// An in-flow card that opens the Support sheet (donate + contact). The whole card is the tap
-    /// target; reuses the heart.fill + metricRose styling and the accessibility copy of the macOS
-    /// toolbar button so both platforms read identically. iOS-only, macOS keeps the toolbar item.
-    private var supportRow: some View {
-        Button {
-            StrandHaptic.selection.play()
-            showingSupport = true
-        } label: {
-            NoopCard {
-                HStack(spacing: 14) {
-                    Image(systemName: "heart.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(StrandPalette.metricRose)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Support NOOP")
-                            .font(StrandFont.headline)
-                            .foregroundStyle(StrandPalette.textPrimary)
-                        Text("Donate or get in touch. Totally optional.")
-                            .font(StrandFont.subhead)
-                            .foregroundStyle(StrandPalette.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(StrandPalette.textTertiary)
-                        .accessibilityHidden(true)
-                }
-            }
-        }
-        // Press-down feedback for the full-card button surface.
-        .buttonStyle(StrandPressableButtonStyle())
-        .accessibilityLabel("Support NOOP: donate or get in touch")
-    }
-    #endif
 
     // MARK: Readiness, on-device training-readiness synthesis (HRV / resting-HR / load).
 
