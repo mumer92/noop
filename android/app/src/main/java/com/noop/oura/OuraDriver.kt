@@ -294,9 +294,14 @@ class OuraDriver(
         val anchorMs = anchorUtcMs ?: return null
         val anchorRt = anchorRingTime ?: return null
         val deltaTicks = forRingTimestamp - anchorRt
-        val ms = anchorMs + deltaTicks * 100   // default 100 ms/tick (s5.5)
-        if (ms <= 0) return null
-        return ms / 1000
+        val ms = anchorMs + deltaTicks * 100   // default 100 ms/tick (s5.5); bounded input, no overflow
+        // #968: a corrupt/misaligned ring timestamp (seen on a full cursor=0 history dump) can convert to
+        // an implausible epoch. Gate the RESULT to the same 2020-2035 plausible window used for anchoring
+        // (was a weak `ms <= 0`), so the caller honestly falls back to arrival time instead of banking a
+        // 1970 or far-future sample. Byte-identical to the Swift twin.
+        val seconds = ms / 1000
+        if (seconds < MIN_PLAUSIBLE_EPOCH_SECONDS || seconds > MAX_PLAUSIBLE_EPOCH_SECONDS) return null
+        return seconds
     }
 
     /**

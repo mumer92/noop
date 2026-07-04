@@ -396,6 +396,29 @@ final class Repository: ObservableObject {
     static func widgetAnchor(days: [DailyMetric], now: Date = Date()) -> DailyMetric? {
         widgetAnchor(days: days, logicalKey: logicalDayKey(now), localKey: localDayKey(now))
     }
+
+    /// The recovery-INDEPENDENT overnight-vitals carry (the durable fix for the v8 Today rollover blank):
+    /// the freshest strictly-prior day that recorded any of HRV / resting HR / respiratory, so the recovery
+    /// VITALS keep reading through the post-04:00 window before tonight's sleep is scored, WITHOUT being
+    /// gated on the prior night's recovery (a night with real HRV/RHR but null recovery is a valid source
+    /// here, unlike `widgetAnchor`/`lastScoredRecoveryDay`). It is only the fallback — call sites read each
+    /// vital today-first (`displayDay?.field ?? vitalsDay?.field`), so today's own value always wins.
+    ///
+    /// `todayKey` is the future-clock-safe today key — the LATER of the logical/local day key, exactly like
+    /// `widgetAnchor`'s `carriedKey` — so a device whose local calendar has already ticked past the logical
+    /// day still bounds the carry at true "today" and can't pick up today's own still-forming row. The pure
+    /// filter lives on `DailyMetric` (package-side, unit-tested headlessly via `swift test`). Strictly a
+    /// vitals selector: it must NEVER feed Charge/Effort/Rest or any recovery/strain-derived surface.
+    static func lastVitalsDay(days: [DailyMetric], now: Date = Date()) -> DailyMetric? {
+        lastVitalsDay(days: days, todayKey: max(logicalDayKey(now), localDayKey(now)))
+    }
+
+    /// Explicit-`todayKey` overload for call sites that already hold the resolved today key (e.g. Today,
+    /// which passes `displayDay?.day ?? selectedDayKey`). Forwards to the pure package selector. Pass the
+    /// future-clock-safe key (the later of logical/local) so the `< todayKey` bound is honest.
+    nonisolated static func lastVitalsDay(days: [DailyMetric], todayKey: String) -> DailyMetric? {
+        DailyMetric.lastVitalsDay(days: days, todayKey: todayKey)
+    }
     /// The trailing 7 CALENDAR days ending today (for the week strip), oldest→newest , not the last 7
     /// stored rows, which on a stale import were old data. ISO yyyy-MM-dd compares chronologically.
     var week: [DailyMetric] {

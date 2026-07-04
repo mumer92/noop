@@ -155,19 +155,21 @@ public enum OuraDecoders {
 
     // MARK: - SpO2 per-sample (0x6F; s6.5)
 
-    /// Decode the 0x6F spo2_event: byte6 bits [7:4]=SpO2 base (<<7), [3:0]=status flag; then one
+    /// Decode the 0x6F spo2_event: byte6 bits [7:4]=SpO2 base/status field, [3:0]=status flag; then one
     /// uint8 SpO2 value per second from byte7 onward (optional 0xFF terminator). Per OURA_PROTOCOL.md
     /// s6.5. Returns nil on a short body.
     public static func decodeSpO2PerSample(_ rec: OuraRecord) -> [OuraSpO2]? {
         let b = rec.payload
         guard b.count >= 2 else { return nil }
-        let base = (Int(b[0]) >> 4) << 7              // high nibble of byte6, scaled << 7
+        // byte6 high nibble [7:4] is a base/status field, NOT an offset to add to each sample. Real Gen 3
+        // captures (#968, pipiche38) show samples[] are DIRECT SpO2 percentages (~95-96), so adding the
+        // scaled base produced impossible ~223% readings. The samples themselves are the percentage.
         var out: [OuraSpO2] = []
         var i = 1
         while i < b.count {
             let raw = Int(b[i])
             if raw == 0xFF { break }                  // terminator
-            out.append(OuraSpO2(ringTimestamp: rec.ringTimestamp, value: base + raw))
+            out.append(OuraSpO2(ringTimestamp: rec.ringTimestamp, value: raw))
             i += 1
         }
         return out.isEmpty ? nil : out

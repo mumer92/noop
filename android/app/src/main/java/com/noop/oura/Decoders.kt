@@ -177,13 +177,15 @@ object OuraDecoders {
     fun decodeSpO2PerSample(rec: OuraRecord): List<OuraSpO2>? {
         val b = rec.payload
         if (b.size < 2) return null
-        val base = (b[0] shr 4) shl 7                    // high nibble of byte6, scaled << 7
+        // byte6 high nibble [7:4] is a base/status field, NOT an offset to add to each sample. Real Gen 3
+        // captures (#968, pipiche38) show samples[] are DIRECT SpO2 percentages (~95-96), so adding the
+        // scaled base produced impossible ~223% readings. The samples themselves are the percentage.
         val out = ArrayList<OuraSpO2>()
         var i = 1
         while (i < b.size) {
             val raw = b[i]
             if (raw == 0xFF) break                       // terminator
-            out.add(OuraSpO2(ringTimestamp = rec.ringTimestamp, value = base + raw))
+            out.add(OuraSpO2(ringTimestamp = rec.ringTimestamp, value = raw))
             i += 1
         }
         return if (out.isEmpty()) null else out

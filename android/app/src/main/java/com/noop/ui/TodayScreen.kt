@@ -681,12 +681,19 @@ fun TodayScreen(
     // merges imported + computed sleep_performance (imported-wins), so an importer sees the export's
     // figure and a Bluetooth-only user sees the on-device composite. Null until loaded / no night yet.
     var restScoreForDay by remember { mutableStateOf<Double?>(null) }
-    LaunchedEffect(days, selectedDayKey) {
+    LaunchedEffect(days, selectedDayKey, selectedDayOffset) {
         val byDay = runCatching {
             viewModel.repo.resolvedSeries("sleep_performance", "my-whoop", "0000-00-00", "9999-99-99")
                 .values.associate { it.first to it.second }
         }.getOrDefault(emptyMap())
-        restScoreForDay = byDay[selectedDayKey] ?: byDay.entries.maxByOrNull { it.key }?.value
+        // #977: the tail-fallback (latest scored night) is now freshness-gated. A live 5.0 whose sleep never
+        // scores used to pin Rest to the weeks-old series tail forever while Charge advanced; if that tail is
+        // stale, fall through to null so the Rest ring shows its needs-a-tracked-night state instead of a
+        // frozen number. `selectedDayKey` is today's key at offset 0, so it anchors the freshness check.
+        val latest = byDay.entries.maxByOrNull { it.key }
+        restScoreForDay = freshRestScore(
+            todayValue = byDay[selectedDayKey], lastDay = latest?.key, lastValue = latest?.value,
+            isTodaySelected = selectedDayOffset == 0, today = selectedDayKey)
     }
 
     // The Rest tile's SPARKLINE series (#614 follow-up). The Rest tile's NUMBER is the Rest composite
@@ -800,6 +807,18 @@ fun TodayScreen(
             isCalibrating = recoveryCalibration != null,
             today = carryOverTodayKey,
         )
+    }
+    // The freshest STRICTLY-PRIOR night carrying a real overnight VITAL (HRV / resting-HR / respiratory),
+    // recovery-INDEPENDENT (#543 follow-up). HRV/RHR/resp exist without a recovery score, so a post-update
+    // re-analysis that nulls last night's recovery while preserving its avgHrv/restingHr must NOT fall back
+    // to an OLDER recovery-scored day for the vitals (that's the tile-vs-card mismatch: the per-field tiles
+    // already keep last night's real value; the whole-row card was discarding it). The vitals read PER-FIELD
+    // today-first with THIS carry as the fallback, kept separate from lastScoredRecoveryDay (Charge ring /
+    // Synthesis / Contributors / Readiness stay recovery-gated). Future-clock-safe: the upper bound is the
+    // LATER of the resolved today row's own key and carryOverTodayKey, mirroring lastScoredRecoveryDay's
+    // #547 guard. Non-null only on today (offset 0). Mirrors iOS Repository.lastVitalsDay.
+    val lastVitalsDay: DailyMetric? = remember(days, carryOverTodayKey, selectedDayOffset, displayMetric) {
+        if (selectedDayOffset == 0) lastVitalsRow(days, maxOf(displayMetric?.day ?: "", carryOverTodayKey)) else null
     }
     // Carry-over Charge for TODAY, the prior scored row's recovery + its "Last night · <date>" caption.
     // Derived from lastScoredRecoveryDay so Charge and every other recovery tile carry the SAME prior day.
@@ -1151,6 +1170,10 @@ fun TodayScreen(
                 // the rest of Today shows last night's carried values. Routing the cards through the same
                 // `carriedDay ?: day` source the HeroMetricRows + MetricGrid already use brings them to parity.
                 carriedDay = lastScoredRecoveryDay,
+                // The recovery-INDEPENDENT vitals carry (#543 follow-up): the overnight HRV / Resting HR /
+                // Respiratory cards read PER-FIELD today-first with THIS fallback, so a night whose recovery
+                // was nulled post-update still surfaces its OWN preserved vitals (not an older scored day's).
+                vitalsDay = lastVitalsDay,
                 stress = stressToday,
                 fitnessAge = fitnessAgeToday,
                 vitality = vitalityToday,
@@ -1232,7 +1255,7 @@ fun TodayScreen(
         // they don't blank to "No Data" while live HR ticks (#543). Staggered in as index 3.
         item {
         Box(modifier = Modifier.fillMaxWidth().staggeredAppear(3)) {
-            HeroMetricRows(day = displayMetric, carriedDay = lastScoredRecoveryDay)
+            HeroMetricRows(day = displayMetric, carriedDay = lastScoredRecoveryDay, vitalsDay = lastVitalsDay)
         }
         }
 
@@ -2562,13 +2585,22 @@ private fun RingNeedsTrackedNight() {
 // README "Metric row" card; the SOLID/CALIBRATING pill + Synthesis insight moved into [SynthesisHeroCard].
 
 /** The three hero vitals as README metric rows, HRV (teal) · Resting HR (rose) · Respiratory (blue).
- *  When today isn't scored yet (#543), reads the carried last-scored day instead of blanking to "No Data",
- *  with ONE card-level "Last night · <date>" footnote so the whole recovery side reads consistently as a
- *  prior read. Each row still falls through to "No Data" for a metric the carried row genuinely lacks. */
+ *  Reads PER-FIELD today-first with a recovery-INDEPENDENT vitals carry ([vitalsDay]) as the fallback
+ *  (#543 follow-up), so a night whose recovery was nulled post-update still shows its OWN preserved HRV /
+ *  RHR / respiratory rather than an older recovery-scored day's numbers (or "No Data"). This aligns the
+ *  card to the Key-Metrics tiles, which already read per-field. Each row still falls through to "No Data"
+ *  for a vital neither today nor the carry supplies. */
 @Composable
-private fun HeroMetricRows(day: DailyMetric?, carriedDay: DailyMetric? = null) {
-    // The row the vitals read from: today's own when it carries recovery, else the carried prior day.
-    val vd = carriedDay ?: day
+private fun HeroMetricRows(day: DailyMetric?, carriedDay: DailyMetric? = null, vitalsDay: DailyMetric? = null) {
+    // Per-field, today-first: today's own value wins; the vitals carry only fills a field today lacks.
+    val hrv = day?.avgHrv ?: vitalsDay?.avgHrv
+    val rhr = day?.restingHr ?: vitalsDay?.restingHr
+    val resp = day?.respRateBpm ?: vitalsDay?.respRateBpm
+    // The caption reflects the row the shown vitals actually came from: if today supplied ANY of them the
+    // values are today's own, so don't stamp them as a prior "Last night · <date>"; only when EVERY shown
+    // vital is carried do we stamp the carry's date (relabelled "Latest sleep · <date>" when weeks-old).
+    val carriedFromVitals = day?.avgHrv == null && day?.restingHr == null && day?.respRateBpm == null &&
+        (hrv != null || rhr != null || resp != null) && vitalsDay != null
     // iOS `recoveryVitalsSection`: a frosted card with a "RECOVERY VITALS" header + a "last night · <date>"
     // on the right, then three `vitalRow`s (26dp mini LIQUID VESSEL + label + value). NoopCard supplies the
     // same neutral surfaceRaised + hairline as iOS's frosted card. Inner spacing 12, matching iOS.
@@ -2579,30 +2611,30 @@ private fun HeroMetricRows(day: DailyMetric?, carriedDay: DailyMetric? = null) {
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Overline("Recovery vitals", modifier = Modifier.weight(1f))
-                // iOS `lastNightLine` — "Last night · <date>" (or the carried day's stamp when carried).
+                // iOS `lastNightLine` — today's own "Last night · <date>" unless the shown vitals are a carry.
                 Text(
-                    if (carriedDay != null) carriedCaption(carriedDay.day) else heroVitalsLastNightLine(),
+                    if (carriedFromVitals) carriedCaption(vitalsDay!!.day) else heroVitalsLastNightLine(),
                     style = NoopType.caption,
                     color = Palette.textTertiary,
                 )
             }
             HeroVitalRow(
                 label = "Heart-rate variability",
-                value = vd?.avgHrv?.let { "${it.roundToInt()} ms" } ?: NO_DATA,
+                value = hrv?.let { "${it.roundToInt()} ms" } ?: NO_DATA,
                 tint = Palette.metricCyan,
-                fraction = vd?.avgHrv?.let { (it / 120.0).coerceIn(0.0, 1.0) },
+                fraction = hrv?.let { (it / 120.0).coerceIn(0.0, 1.0) },
             )
             HeroVitalRow(
                 label = "Resting heart rate",
-                value = vd?.restingHr?.let { "$it bpm" } ?: NO_DATA,
+                value = rhr?.let { "$it bpm" } ?: NO_DATA,
                 tint = Palette.metricRose,
-                fraction = vd?.restingHr?.let { (it / 100.0).coerceIn(0.0, 1.0) },
+                fraction = rhr?.let { (it / 100.0).coerceIn(0.0, 1.0) },
             )
             HeroVitalRow(
                 label = "Breaths per minute",
-                value = vd?.respRateBpm?.let { String.format(Locale.US, "%.1f rpm", it) } ?: NO_DATA,
+                value = resp?.let { String.format(Locale.US, "%.1f rpm", it) } ?: NO_DATA,
                 tint = Palette.accent,
-                fraction = vd?.respRateBpm?.let { (it / 24.0).coerceIn(0.0, 1.0) },
+                fraction = resp?.let { (it / 24.0).coerceIn(0.0, 1.0) },
             )
         }
     }
@@ -2654,6 +2686,7 @@ private fun YourCardsSection(
     cards: List<DashboardCard>,
     day: DailyMetric?,
     carriedDay: DailyMetric?,
+    vitalsDay: DailyMetric?,
     stress: Double?,
     fitnessAge: Double?,
     vitality: Double?,
@@ -2699,6 +2732,7 @@ private fun YourCardsSection(
                         card = card,
                         day = day,
                         carriedDay = carriedDay,
+                        vitalsDay = vitalsDay,
                         stress = stress,
                         fitnessAge = fitnessAge,
                         vitality = vitality,
@@ -2713,6 +2747,7 @@ private fun YourCardsSection(
                         card = card,
                         day = day,
                         carriedDay = carriedDay,
+                        vitalsDay = vitalsDay,
                         stress = stress,
                         fitnessAge = fitnessAge,
                         vitality = vitality,
@@ -2810,13 +2845,16 @@ private fun dashboardCardTint(card: DashboardCard): Color = when (card) {
  *   Stress = stress/3 · Fitness age = 0.5 (fixed) · Vitality = vitality/100 · HRV = avgHrv/120 ·
  *   Resting HR = restingHr/100 · Respiratory = respRate/24 · Steps = steps/10000 · Sleep = totalSleepMin/480 ·
  *   Coupled = 0.6 (fixed) · Blood oxygen / Skin temp / Calories / Hydration = null (empty, not half-full).
- * Reads the SAME `carriedDay ?: day` carry-over the row VALUE uses for the overnight vitals, so the vessel
- * fill and the number agree after the logical-day rollover.
+ * The three overnight vitals (HRV / Resting HR / Respiratory) read PER-FIELD today-first with the
+ * recovery-INDEPENDENT [vitalsDay] carry, matching the row VALUE, so the vessel fill and the number agree
+ * (and a recovery-nulled night keeps its OWN preserved vitals). Sleep keeps the recovery-gated
+ * `carriedDay ?: day` carry.
  */
 private fun dashboardCardFraction(
     card: DashboardCard,
     day: DailyMetric?,
     carriedDay: DailyMetric?,
+    vitalsDay: DailyMetric?,
     stress: Double?,
     fitnessAge: Double?,
     vitality: Double?,
@@ -2829,9 +2867,9 @@ private fun dashboardCardFraction(
         DashboardCard.STRESS -> over(stress, 3.0)
         DashboardCard.FITNESS_AGE -> if (fitnessAge != null) 0.5 else null
         DashboardCard.VITALITY -> over(vitality, 100.0)
-        DashboardCard.HRV -> over(vd?.avgHrv, 120.0)
-        DashboardCard.RESTING_HR -> over(vd?.restingHr?.toDouble(), 100.0)
-        DashboardCard.RESPIRATORY -> over(vd?.respRateBpm, 24.0)
+        DashboardCard.HRV -> over(day?.avgHrv ?: vitalsDay?.avgHrv, 120.0)
+        DashboardCard.RESTING_HR -> over((day?.restingHr ?: vitalsDay?.restingHr)?.toDouble(), 100.0)
+        DashboardCard.RESPIRATORY -> over(day?.respRateBpm ?: vitalsDay?.respRateBpm, 24.0)
         DashboardCard.STEPS -> {
             val steps = (day?.steps ?: importedStepsForDay ?: estimatedStepsForDay)?.toDouble()
             over(steps, 10000.0)
@@ -2850,16 +2888,18 @@ private fun dashboardCardFraction(
  * the SAME reads the rest of Today uses (displayMetric vitals, the pinned Stress / Fitness age / Vitality,
  * steps, calories, sleep duration). Mirrors iOS dashboardValue.
  *
- * The overnight-vital cards (HRV / Resting HR / Respiratory / SpO₂ / Skin Temp / Sleep) read
- * `carriedDay ?: day`, the SAME carry-over the HeroMetricRows + Key-Metrics tiles use (#543), so right
- * after the logical-day rollover, before tonight is scored, they show last night's carried values instead
- * of blanking to "No Data". Steps / Calories stay on today's own row (they accrue through the day, never
- * a recovery-night carry). Stress / Fitness age / Vitality come from their own resolved loads.
+ * The three overnight vitals (HRV / Resting HR / Respiratory) read PER-FIELD today-first with the
+ * recovery-INDEPENDENT [vitalsDay] carry (#543 follow-up), so a night whose recovery was nulled post-update
+ * still shows its OWN preserved value rather than an older recovery-scored day's (the tile-vs-card fix).
+ * SpO₂ / Skin Temp / Sleep keep the recovery-gated `carriedDay ?: day` carry. Steps / Calories stay on
+ * today's own row (they accrue through the day, never a carry). Stress / Fitness age / Vitality come from
+ * their own resolved loads.
  */
 private fun dashboardCardValue(
     card: DashboardCard,
     day: DailyMetric?,
     carriedDay: DailyMetric?,
+    vitalsDay: DailyMetric?,
     stress: Double?,
     fitnessAge: Double?,
     vitality: Double?,
@@ -2872,16 +2912,16 @@ private fun dashboardCardValue(
     fun withUnit(s: String): String =
         if (s == NO_DATA) NO_DATA else if (card.unit.isEmpty()) s else "$s ${card.unit}"
 
-    // The overnight vitals carry over from the last scored night; today's accruing totals do not.
+    // SpO₂ / Skin Temp / Sleep carry over from the last scored night; today's accruing totals do not.
     val vd = carriedDay ?: day
 
     return when (card) {
         DashboardCard.HRV ->
-            withUnit(vd?.avgHrv?.let { it.roundToInt().toString() } ?: NO_DATA)
+            withUnit((day?.avgHrv ?: vitalsDay?.avgHrv)?.let { it.roundToInt().toString() } ?: NO_DATA)
         DashboardCard.RESTING_HR ->
-            withUnit(vd?.restingHr?.toString() ?: NO_DATA)
+            withUnit((day?.restingHr ?: vitalsDay?.restingHr)?.toString() ?: NO_DATA)
         DashboardCard.RESPIRATORY ->
-            withUnit(vd?.respRateBpm?.let { String.format(Locale.US, "%.1f", it) } ?: NO_DATA)
+            withUnit((day?.respRateBpm ?: vitalsDay?.respRateBpm)?.let { String.format(Locale.US, "%.1f", it) } ?: NO_DATA)
         DashboardCard.BLOOD_OXYGEN ->
             vd?.spo2Pct?.let { String.format(Locale.US, "%.0f%%", it) } ?: NO_DATA
         DashboardCard.SKIN_TEMP ->
@@ -3606,6 +3646,22 @@ internal fun isCarryStale(priorDayKey: String, today: String = LocalDate.now().t
     runCatching {
         ChronoUnit.DAYS.between(LocalDate.parse(priorDayKey), LocalDate.parse(today)) > CARRY_FRESHNESS_DAYS
     }.getOrDefault(false)
+
+/** #977 — HONEST Rest resolution for the selected day. Today's own scored Rest wins; otherwise, ONLY on
+ *  today, tail-fall-back to the last scored night — but ONLY when that night is within the carry-freshness
+ *  window ([isCarryStale] == false). A live 5.0 whose sleep never scores (no overnight gravity ⇒ no
+ *  `sleep_performance` point ever written) used to pin Rest to a weeks-old scored night while Charge kept
+ *  advancing; gating the tail-fallback lets the Rest ring fall through to its needs-a-tracked-night state
+ *  instead of freezing on a stale number. The legitimate morning carry of last night's Rest (before today
+ *  scores) is preserved unchanged. Pure + unit-testable. Mirrors iOS TodayView.freshRestScore. */
+internal fun freshRestScore(
+    todayValue: Double?, lastDay: String?, lastValue: Double?,
+    isTodaySelected: Boolean, today: String = LocalDate.now().toString(),
+): Double? {
+    if (todayValue != null) return todayValue
+    if (!isTodaySelected || lastDay == null || lastValue == null) return null
+    return if (isCarryStale(lastDay, today)) null else lastValue
+}
 
 /** The carried recovery caption stamp, keyed on that scored day's own date and its recency. Within the
  *  freshness cap it reads "Last night · <date>"; once the carried day is older than the cap (#779) it reads
