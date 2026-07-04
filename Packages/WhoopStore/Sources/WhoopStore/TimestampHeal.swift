@@ -70,6 +70,7 @@ extension WhoopStore {
                            arguments: [lo, hi])
             computedDeleted += db.changesCount
 
+            try WhoopStore.bumpSyncRevision(db, ifChanged: rawDeleted + computedDeleted)
             return TimestampHealResult(rawRowsDeleted: rawDeleted,
                                        computedRowsDeleted: computedDeleted)
         }

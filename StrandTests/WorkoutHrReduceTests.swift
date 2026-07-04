@@ -1,5 +1,8 @@
 import XCTest
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 import WhoopProtocol
 @testable import Strand
 
@@ -51,7 +54,11 @@ final class WorkoutHrReduceTests: XCTestCase {
     func testReduceRunsOffMainActor() async {
         let input = samples((0..<8000).map { 60 + ($0 % 40) })
         let result: (offMain: Bool, avg: Int, peak: Int) = await Task.detached {
-            let onMain = Thread.isMainThread
+            #if canImport(Darwin)
+            let onMain = pthread_main_np() != 0
+            #else
+            let onMain = false
+            #endif
             let (avg, peak) = Repository.reduceWorkoutHr(input)
             return (offMain: !onMain, avg: avg, peak: peak)
         }.value

@@ -17,6 +17,7 @@ import StrandAnalytics
 struct HydrationView: View {
     @EnvironmentObject var repo: Repository
     @EnvironmentObject var profile: ProfileStore
+    @EnvironmentObject var live: LiveState
 
     /// Today's running total (ml) + the 7-day history (oldest→newest), loaded off the gesture path and
     /// refreshed after each log. A reload key the taps bump so the `.task` re-reads the store.
@@ -46,9 +47,18 @@ struct HydrationView: View {
                        // tabs carry, so Hydration sits in one atmosphere.
                        topBackground: liquidScaffoldSky()) {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
+                if live.remoteSource != nil {
+                    MirroringManagedNotice(
+                        title: "Hydration managed on iPhone",
+                        message: "Hydration entries are mirrored from the iPhone. Log or edit drinks there while this Mac is mirroring.")
+                }
                 ringSection
                 logSection
+                    .disabled(live.remoteSource != nil)
+                    .opacity(live.remoteSource != nil ? StrandPalette.disabledOpacity : 1)
                 entriesSection
+                    .disabled(live.remoteSource != nil)
+                    .opacity(live.remoteSource != nil ? StrandPalette.disabledOpacity : 1)
                 historySection
                 todayTotalSection
                 Text("A simple goal that adjusts to your effort. General wellness guidance, not medical advice.")
@@ -70,12 +80,14 @@ struct HydrationView: View {
         .sheet(item: $editingEntry) { entry in
             HydrationAmountSheet(title: "Edit drink", initialML: entry.amountMl) { newML in
                 editingEntry = nil
+                guard live.remoteSource == nil else { return }
                 Task { await updateEntry(entry, to: newML) }
             } onCancel: { editingEntry = nil }
         }
         // #798 - set the custom container size.
         .sheet(isPresented: $showCustomSizeSheet) {
             HydrationAmountSheet(title: "Custom size", initialML: customSizeML) { newML in
+                guard live.remoteSource == nil else { showCustomSizeSheet = false; return }
                 customSizeML = newML
                 showCustomSizeSheet = false
             } onCancel: { showCustomSizeSheet = false }
@@ -344,6 +356,7 @@ struct HydrationView: View {
 
     /// Log `ml` (additive day total + a per-entry row, #798) and refresh.
     private func add(ml: Int) async {
+        guard live.remoteSource == nil else { return }
         guard ml > 0 else { return }
         _ = await repo.logHydration(amountMl: ml)
         reloadTick &+= 1
@@ -351,12 +364,14 @@ struct HydrationView: View {
 
     /// #798 - delete a logged drink, re-deriving the day total, then refresh.
     private func deleteEntry(_ entry: HydrationEntry) async {
+        guard live.remoteSource == nil else { return }
         _ = await repo.deleteHydrationEntry(id: entry.id)
         reloadTick &+= 1
     }
 
     /// #798 - set a logged drink's amount, re-deriving the day total, then refresh.
     private func updateEntry(_ entry: HydrationEntry, to ml: Int) async {
+        guard live.remoteSource == nil else { return }
         _ = await repo.updateHydrationEntry(id: entry.id, amountMl: ml)
         reloadTick &+= 1
     }

@@ -248,17 +248,18 @@ struct SettingsView: View {
             title: "Profile photo",
             blurb: "Optional. Add a photo for the avatar in the top-left. Stored only on \(Platform.deviceNounPhrase). NOOP is offline, so it's never uploaded."
         ) {
+            let hasAvatar = profile.hasAvatar
             HStack(spacing: 16) {
                 ProfileAvatarView(imageData: profile.avatarImageData, size: 64)
-                    .accessibilityLabel(profile.hasAvatar ? "Your profile photo" : "No profile photo set")
+                    .accessibilityLabel(hasAvatar ? "Your profile photo" : "No profile photo set")
 
                 VStack(alignment: .leading, spacing: NoopMetrics.space2) {
                     PhotosPicker(selection: $avatarPickerItem, matching: .images) {
-                        Text(profile.hasAvatar ? "Change photo" : "Choose photo")
+                        Text(hasAvatar ? "Change photo" : "Choose photo")
                     }
                     .buttonStyle(NoopButtonStyle(.secondary, fullWidth: true))
 
-                    if profile.hasAvatar {
+                    if hasAvatar {
                         Button("Remove photo") { profile.clearAvatar() }
                             .buttonStyle(NoopButtonStyle(.tertiary, fullWidth: true))
                             .accessibilityHint("Reverts to the default profile icon")
@@ -269,7 +270,7 @@ struct SettingsView: View {
         }
         // Load the picked photo's bytes, then hand them to the store (which downscales + persists).
         // Clearing the selection afterwards lets the user re-pick the same photo if they want.
-        .onChange(of: avatarPickerItem) { newItem in
+        .onChangeCompat(of: avatarPickerItem) { newItem in
             guard let newItem else { return }
             Task {
                 let data = try? await newItem.loadTransferable(type: Data.self)
@@ -725,6 +726,11 @@ struct SettingsView: View {
             blurb: "NOOP pairs directly with your WHOOP over Bluetooth: no WHOOP app, no cloud."
         ) {
             VStack(alignment: .leading, spacing: 16) {
+                if live.remoteSource != nil {
+                    MirroringManagedNotice(
+                        title: "Strap managed on iPhone",
+                        message: "This Mac is mirroring the iPhone's strap connection. Scan, disconnect, rename, and pairing changes happen on the iPhone while mirroring.")
+                }
                 HStack(spacing: 12) {
                     StatePill("\(strapStatusTitle)", tone: strapTone, pulsing: live.connected)
                     if let pct = live.batteryPct {
@@ -738,15 +744,17 @@ struct SettingsView: View {
                 Text(strapStatusDetail)
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
-                HStack(spacing: NoopMetrics.space3) {
-                    NoopButton("Re-scan", systemImage: "arrow.clockwise", kind: .primary) {
-                        model.scan()
-                    }
+                if live.remoteSource == nil {
+                    HStack(spacing: NoopMetrics.space3) {
+                        NoopButton("Re-scan", systemImage: "arrow.clockwise", kind: .primary) {
+                            model.scan()
+                        }
 
-                    NoopButton("Disconnect", systemImage: "xmark.circle", kind: .secondary) {
-                        model.disconnect()
+                        NoopButton("Disconnect", systemImage: "xmark.circle", kind: .secondary) {
+                            model.disconnect()
+                        }
+                        .disabled(!live.connected && !live.bonded)
                     }
-                    .disabled(!live.connected && !live.bonded)
                 }
 
                 Divider().overlay(StrandPalette.hairline)
@@ -779,6 +787,7 @@ struct SettingsView: View {
                 }
                 .toggleStyle(.switch)
                 .tint(StrandPalette.accent)
+                .disabled(live.remoteSource != nil)
                 .onChangeCompat(of: continuousHrvEnabled) { on in model.ble.setKeepRealtimeForData(on) }
                 Text("Keeps the detailed beat-to-beat heart-rate stream running all day and night, not just while a live screen is open, so NOOP captures much more for overnight HRV, recovery and sleep. Uses more battery: your strap streams heart rate continuously while connected.")
                     .font(StrandFont.caption)
@@ -806,7 +815,7 @@ struct SettingsView: View {
                 }
 
                 // MARK: Strap name — rename the WHOOP 4.0's BLE advertising name (Harvard command set).
-                if live.connected && selectedWhoopModelRaw == WhoopModel.whoop4.rawValue {
+                if live.remoteSource == nil && live.connected && selectedWhoopModelRaw == WhoopModel.whoop4.rawValue {
                     Divider().overlay(StrandPalette.hairline)
                     strapNameControl
                 }
@@ -1007,6 +1016,7 @@ struct SettingsView: View {
                 }
                 .toggleStyle(.switch)
                 .tint(StrandPalette.accent)
+                .disabled(live.remoteSource != nil)
                 .accessibilityHint("Adds a water-log card to your dashboard")
 
                 Text("Adds a simple fluid log with a daily goal that adjusts to your effort. Tap to add a sip, cup or bottle and watch a progress ring fill. On \(Platform.deviceNounPhrase) only. Nothing is synced.")
@@ -1023,6 +1033,7 @@ struct SettingsView: View {
                 }
                 .toggleStyle(.switch)
                 .tint(StrandPalette.accent)
+                .disabled(live.remoteSource != nil)
                 .accessibilityHint("Offers to save a workout when it spots sustained elevated heart rate")
 
                 Text("After a sync, NOOP looks over your recent heart rate for a sustained, raised stretch that looks like exercise and offers to save it. It only ever suggests. Nothing is saved until you tap Save, and you can dismiss any suggestion. Deliberately conservative, so the odd workout may be missed. On \(Platform.deviceNounPhrase) only.")

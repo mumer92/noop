@@ -15,6 +15,7 @@ import StrandDesign
 /// history, logged and imported, stays joined under the original question.
 struct JournalLogCard: View {
     @EnvironmentObject var repo: Repository
+    @EnvironmentObject var live: LiveState
     /// The journal catalog is single-user state owned here (UserDefaults-backed), so hosting the card
     /// needs no app-level injection.
     @StateObject private var catalog = JournalCatalogStore()
@@ -85,11 +86,16 @@ struct JournalLogCard: View {
                 if editing {
                     pillButton("Done", selected: true) { editing = false }
                 } else {
-                    pillButton("Edit", selected: false) { editing = true }
+                    pillButton("Edit", selected: false) { if live.remoteSource == nil { editing = true } }
                     dayPill("Tomorrow", offset: -1)
                     dayPill("Today", offset: 0)
                     dayPill("Yesterday", offset: 1)
                 }
+            }
+            if live.remoteSource != nil {
+                MirroringManagedNotice(
+                    title: "Journal managed on iPhone",
+                    message: "Journal answers are mirrored from the iPhone. Edit them there while this Mac is mirroring.")
             }
             NoopCard(tint: StrandPalette.restColor) {
                 VStack(alignment: .leading, spacing: 10) {
@@ -144,6 +150,8 @@ struct JournalLogCard: View {
                     ForEach(groupItems) { item in itemRow(item) }
                 }
             }
+            .disabled(live.remoteSource != nil)
+            .opacity(live.remoteSource != nil ? StrandPalette.disabledOpacity : 1)
         }
     }
 

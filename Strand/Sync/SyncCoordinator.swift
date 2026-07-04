@@ -22,6 +22,15 @@ private final class DataHolder: @unchecked Sendable {
     func get() -> Data? { lock.lock(); defer { lock.unlock() }; return value }
 }
 
+/// Thread-safe holder for the repository sync revision. The live server reads this off the Network queue;
+/// the coordinator refreshes it on the main actor alongside the live snapshot.
+private final class UInt64Holder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt64 = 0
+    func set(_ v: UInt64) { lock.lock(); value = v; lock.unlock() }
+    func get() -> UInt64 { lock.lock(); defer { lock.unlock() }; return value }
+}
+
 /// The app-side brain for local-network sync. Two channels over one pairing:
 /// - **History** (iOS serves a `.noopbak`; macOS pulls + restores) — the whole-DB mirror.
 /// - **Live** (iOS streams `LiveSnapshot`; macOS applies to its `LiveState`) — live HR + "via iPhone".
@@ -46,9 +55,13 @@ final class SyncCoordinator: ObservableObject {
     var settingsProvider: (() -> Data?)?
     var settingsApplier: ((SyncSettings) -> Void)?
     var settingsRestore: (() -> Void)?
+    var sessionProvider: (() -> LiveSessionSnapshot?)?
+    var commandAckProvider: (() -> String?)?
     private let settingsHolder = DataHolder()
+    private let revisionHolder = UInt64Holder()
     private let enabledKey = "localsync.enabled"
     private let lastHashKey = "localsync.lastHash"
+    private let lastRevisionKey = "localsync.lastRevision"
 
     // iOS
     private var server: SyncServer?
@@ -63,6 +76,8 @@ final class SyncCoordinator: ObservableObject {
     private var liveBrowser: SyncBrowser?
     private var liveClient: SyncLiveClient?
     private var currentEndpoint: NWEndpoint?
+    private var currentLiveEndpoint: NWEndpoint?
+    private var pendingRemoteRevision: UInt64?
     private var inFlight = false
 
     init(repo: Repository, live: LiveState) {
@@ -100,6 +115,7 @@ final class SyncCoordinator: ObservableObject {
         cancellables.removeAll()
         browser?.stop(); browser = nil
         liveBrowser?.stop(); liveBrowser = nil
+        currentLiveEndpoint = nil
         liveClient?.disconnect(); liveClient = nil
         live.clearRemote()
         currentEndpoint = nil
@@ -137,6 +153,8 @@ final class SyncCoordinator: ObservableObject {
     func unpair() {
         SyncPairing.clear()
         UserDefaults.standard.removeObject(forKey: lastHashKey)
+        UserDefaults.standard.removeObject(forKey: lastRevisionKey)
+        pendingRemoteRevision = nil
         stop()
         settingsRestore?()   // macOS: revert to this Mac's own profile/settings
         pairedLabel = nil
@@ -161,7 +179,8 @@ final class SyncCoordinator: ObservableObject {
 
         // History server
         server?.stop()
-        let advert = SyncAdvert(rev: UInt64(repo.days.count),
+        revisionHolder.set(0)
+        let advert = SyncAdvert(rev: revisionHolder.get(),
                                 day: repo.days.last?.day ?? "",
                                 v: WhoopStoreInfo.schemaVersion)
         let s = SyncServer(psk: psk, identity: "iphone", peerToPeer: false,
@@ -178,12 +197,13 @@ final class SyncCoordinator: ObservableObject {
         refreshSnapshotHolder()
         snapshotTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                self?.refreshSnapshotHolder()
+                await self?.refreshSnapshotHolderFromStore()
                 try? await Task.sleep(nanoseconds: 400_000_000)   // 0.4s
             }
         }
         let ls = SyncLiveServer(psk: psk, useBonjour: true, peerToPeer: false, interval: 1.0,
                                 snapshot: { [snapHolder] in snapHolder.get() },
+                                revision: { [revisionHolder] in revisionHolder.get() },
                                 onCommand: { [weak self] cmd in Task { @MainActor in self?.commandHandler?(cmd) } },
                                 settings: { [settingsHolder] in settingsHolder.get() })
         try? ls.start()
@@ -191,8 +211,13 @@ final class SyncCoordinator: ObservableObject {
     }
 
     private func refreshSnapshotHolder() {
-        snapHolder.set(live.snapshot())
+        snapHolder.set(live.snapshot(session: sessionProvider?(), commandAck: commandAckProvider?()))
         settingsHolder.set(settingsProvider?())   // profile + prefs mirror (change-driven on the wire)
+    }
+
+    private func refreshSnapshotHolderFromStore() async {
+        revisionHolder.set(await repo.syncRevision())
+        refreshSnapshotHolder()
     }
 
     private func makeBackup() async -> URL? {
@@ -227,15 +252,17 @@ final class SyncCoordinator: ObservableObject {
     private func handleEndpoint(_ endpoint: NWEndpoint) {
         currentEndpoint = endpoint
         guard !inFlight else { return }
+        guard UserDefaults.standard.string(forKey: lastHashKey) == nil else { return }
         Task { await pullAndRestore(endpoint) }
     }
 
     private func connectLive(_ endpoint: NWEndpoint) {
+        currentLiveEndpoint = endpoint
         guard liveClient == nil, let peer = SyncPairing.load() else { return }   // connect once
         let client = SyncLiveClient(
             psk: SyncCrypto.psk(fromCode: peer.code), peerToPeer: false,
             onSnapshot: { [weak self] snap in Task { @MainActor in self?.live.applyRemote(snap, from: "iPhone") } },
-            onHistoryChanged: { [weak self] _ in Task { @MainActor in self?.syncNow() } },
+            onHistoryChanged: { [weak self] rev in Task { @MainActor in self?.handleHistoryChanged(rev) } },
             onConnectionChange: { [weak self] up in Task { @MainActor in if !up { self?.onLiveLinkDown() } } },
             onSettings: { [weak self] s in Task { @MainActor in self?.settingsApplier?(s) } })
         client.connect(to: endpoint)
@@ -244,7 +271,31 @@ final class SyncCoordinator: ObservableObject {
 
     private func onLiveLinkDown() {
         live.clearRemote()
-        liveClient = nil   // allow a future discovery to reconnect
+        liveClient = nil
+        guard isEnabled, SyncPairing.load() != nil, let endpoint = currentLiveEndpoint else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            self?.connectLive(endpoint)
+        }
+    }
+
+    private func handleHistoryChanged(_ rev: UInt64) {
+        guard rev > lastAppliedRevision else { return }
+        pendingRemoteRevision = max(pendingRemoteRevision ?? 0, rev)
+        syncNow()
+    }
+
+    private var lastAppliedRevision: UInt64 {
+        if let n = UserDefaults.standard.object(forKey: lastRevisionKey) as? NSNumber {
+            return n.uint64Value
+        }
+        return 0
+    }
+
+    private func markPendingRevisionApplied() {
+        guard let rev = pendingRemoteRevision else { return }
+        UserDefaults.standard.set(NSNumber(value: rev), forKey: lastRevisionKey)
+        pendingRemoteRevision = nil
     }
 
     /// Manual "Sync now": pull the DB from the last-seen peer immediately.
@@ -266,6 +317,7 @@ final class SyncCoordinator: ObservableObject {
             let hex = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
             if hex == UserDefaults.standard.string(forKey: lastHashKey) {
                 try? FileManager.default.removeItem(at: url)
+                markPendingRevisionApplied()
                 state = .upToDate
                 return
             }
@@ -274,6 +326,7 @@ final class SyncCoordinator: ObservableObject {
             switch result {
             case .imported:
                 UserDefaults.standard.set(hex, forKey: lastHashKey)
+                markPendingRevisionApplied()
                 lastSync = Date()
                 UserDefaults.standard.set(lastSync, forKey: "localsync.lastSync")
                 // Reopen the restored database in-process and reload the dashboards — no relaunch needed.

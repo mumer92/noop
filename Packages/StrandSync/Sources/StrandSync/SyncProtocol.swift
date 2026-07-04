@@ -24,6 +24,7 @@ public enum SyncMessage: Equatable {
     // History channel
     case pullRequest          // client → server: "send me your latest backup"
     case backupChunk(Data)    // server → client: one chunk of the .noopbak
+    case backupDigest(Data)   // server → client: SHA-256 digest of the streamed .noopbak
     case done                 // server → client: end of stream
     // Live channel
     case subscribeLive          // client → server: "stream me live snapshots"
@@ -42,13 +43,15 @@ public enum SyncMessage: Equatable {
         case .historyChanged: return 6
         case .command:        return 7
         case .settings:       return 8
+        case .backupDigest:   return 9
         }
     }
 
     public func encoded() -> Data {
         var d = Data([wireTag])
         switch self {
-        case .backupChunk(let payload), .liveSnapshot(let payload), .command(let payload), .settings(let payload):
+        case .backupChunk(let payload), .backupDigest(let payload), .liveSnapshot(let payload),
+             .command(let payload), .settings(let payload):
             d.append(payload)
         case .historyChanged(let rev):
             var be = rev.bigEndian
@@ -74,6 +77,7 @@ public enum SyncMessage: Equatable {
             return .historyChanged(rev)
         case 7: return .command(body)
         case 8: return .settings(body)
+        case 9: return .backupDigest(body)
         default: return nil
         }
     }

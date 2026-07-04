@@ -140,6 +140,7 @@ extension WhoopStore {
                 touched.insert(DayCell(deviceId: r.deviceId, markerKey: r.markerKey, day: r.day))
             }
             try reprojectCells(db, cells: touched)
+            try WhoopStore.bumpSyncRevision(db, ifChanged: written)
             return written
         }
     }
@@ -196,7 +197,9 @@ extension WhoopStore {
                 return false
             }
             try db.execute(sql: "DELETE FROM labMarker WHERE id = ?", arguments: [id])
+            let changed = db.changesCount
             try reprojectCells(db, cells: [DayCell(deviceId: row.deviceId, markerKey: row.markerKey, day: row.day)])
+            try WhoopStore.bumpSyncRevision(db, ifChanged: changed)
             return true
         }
     }

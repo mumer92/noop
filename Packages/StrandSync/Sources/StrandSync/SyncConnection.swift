@@ -1,7 +1,7 @@
 import Foundation
 import Network
 
-public enum SyncError: Error { case closed, noBackup, badMessage, timedOut }
+public enum SyncError: Error { case closed, noBackup, badMessage, timedOut, transferTooLarge, checksumMismatch }
 
 /// A resume-once guard so an `NWConnection` state handler (which can fire multiple states) never
 /// resumes a continuation twice.
@@ -51,23 +51,33 @@ public final class SyncConnection: @unchecked Sendable {
     }
 
     /// Receive the next complete framed `SyncMessage`, reading more bytes as needed.
-    public func receive() async throws -> SyncMessage {
+    public func receive(timeout: TimeInterval? = nil) async throws -> SyncMessage {
         while true {
             if let payload = SyncFraming.decode(&inbound) {
                 guard let msg = SyncMessage.decode(payload) else { throw SyncError.badMessage }
                 return msg
             }
-            inbound.append(try await receiveChunk())
+            inbound.append(try await receiveChunk(timeout: timeout))
         }
     }
 
-    private func receiveChunk() async throws -> Data {
+    private func receiveChunk(timeout: TimeInterval? = nil) async throws -> Data {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+            let once = OnceFlag()
+            let conn = self.conn
             conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, err in
+                guard once.fire() else { return }
                 if let err { cont.resume(throwing: err); return }
                 if let data, !data.isEmpty { cont.resume(returning: data); return }
                 if isComplete { cont.resume(throwing: SyncError.closed); return }
                 cont.resume(returning: Data())
+            }
+            if let timeout {
+                Self.queue.asyncAfter(deadline: .now() + timeout) {
+                    guard once.fire() else { return }
+                    conn.cancel()
+                    cont.resume(throwing: SyncError.timedOut)
+                }
             }
         }
     }

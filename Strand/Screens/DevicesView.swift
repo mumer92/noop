@@ -12,11 +12,10 @@ import OuraProtocol
 // active-device change — so this view never touches BLEManager or the WHOOP path directly.
 struct DevicesView: View {
     @EnvironmentObject var model: AppModel
-    // PERF: this OUTER view does NOT observe `LiveState`. It only branches on `model.deviceRegistry`
-    // becoming non-nil and hands off to `DevicesContent`, which owns its own `@EnvironmentObject live`
-    // (the live battery / "Active · Live" badge live there). Observing `live` here would re-render the
-    // whole screen on every ~1 Hz strap tick for no visible change — `live` is still in the environment
-    // for `DevicesContent` and the Add-device wizard, so nothing downstream loses its live readout.
+    @EnvironmentObject var live: LiveState
+    // This outer view observes `LiveState` only for `remoteSource`, so relay mode can replace local device
+    // management immediately. The per-device live battery / "Active · Live" badge still lives in
+    // `DevicesContent`.
 
     var body: some View {
         ScreenScaffold(title: "Devices",
@@ -24,7 +23,11 @@ struct DevicesView: View {
                        // The day-of-sky liquid backdrop, matching Today / Health / Sleep / Trends: a fixed,
                        // full-bleed time-of-day sky behind the scroll content (it does not scroll).
                        topBackground: liquidScaffoldSky()) {
-            if let registry = model.deviceRegistry {
+            if live.remoteSource != nil {
+                MirroringManagedNotice(
+                    title: "Devices managed on iPhone",
+                    message: "This Mac is mirroring the iPhone. Add, switch, rename, forget, or remove devices on the iPhone so the authoritative database stays consistent.")
+            } else if let registry = model.deviceRegistry {
                 DevicesContent(registry: registry)
             } else {
                 // The registry is built once the on-device store opens (a beat after launch). Show a

@@ -57,6 +57,7 @@ struct InsightsLoadCache {
 
 struct InsightsView: View {
     @EnvironmentObject var repo: Repository
+    @EnvironmentObject var live: LiveState
     /// Deep-link into the v5 "What moves you" hub (the n-of-1 ranked-effect + dose-response surface).
     @EnvironmentObject var router: NavRouter
     /// #860 item 4: foreground signal for the day-rollover re-load (see `currentDayKey`).
@@ -667,12 +668,13 @@ struct InsightsView: View {
                     Label("Mark done today", systemImage: "checkmark.circle.fill")
                 }
                 .buttonStyle(NoopButtonStyle(.primary))
-                .disabled(snapshot.loggedToday)
+                .disabled(snapshot.loggedToday || live.remoteSource != nil)
 
                 Button { Task { await markExperimentToday(false) } } label: {
                     Label("Skip today", systemImage: "xmark.circle")
                 }
                 .buttonStyle(NoopButtonStyle(.secondary))
+                .disabled(live.remoteSource != nil)
 
                 Spacer(minLength: 8)
 
@@ -844,6 +846,7 @@ struct InsightsView: View {
     }
 
     private func markExperimentToday(_ answeredYes: Bool) async {
+        guard live.remoteSource == nil else { return }
         guard let behavior = activeExperimentSnapshot?.behavior else { return }
         await repo.saveJournalAnswer(day: Repository.localDayKey(Date()),
                                      question: behavior,

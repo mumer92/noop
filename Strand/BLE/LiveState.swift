@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import StrandAnalytics
+import StrandSync
 import WhoopProtocol
 
 /// Observable snapshot of the live connection + biometric state, driven by FrameRouter
@@ -13,6 +14,10 @@ public final class LiveState: ObservableObject {
     /// "iPhone") rather than a local strap — the UI labels the connection badge accordingly. See
     /// `applyRemote` / `clearRemote` (Strand/Sync/LiveStateRelay.swift). nil = local strap (or nothing).
     @Published public var remoteSource: String? = nil
+    /// Workout/session state mirrored from the iPhone while this Mac is in Local Sync relay mode.
+    @Published public var remoteSession: LiveSessionSnapshot? = nil
+    /// Last remote command acknowledgement mirrored from the iPhone.
+    @Published public var remoteCommandAck: String? = nil
 
     /// Set the relayed R-R buffer from the Local Sync relay. `rrRecent`'s setter is file-private, so the
     /// relay extension (a different file) sets it through this same-file helper.
@@ -491,10 +496,10 @@ public final class LiveState: ObservableObject {
     /// scheduled export can read the last day's lines even with no live BLE session open. Small and
     /// bounded: capped to the tail (`tailLimit`, well under `maxLogLines`) of short redacted strings, so
     /// the persisted blob stays a few hundred KB at most. On-device only; nothing is sent anywhere.
-    private static let tailKey = "strapLog.tail"
+    nonisolated private static let tailKey = "strapLog.tail"
     /// How many recent lines the durable tail retains — a sensible day's worth for a scheduled export,
     /// smaller than the live `maxLogLines` ring so the persisted copy stays modest.
-    static let tailLimit = 2_000
+    nonisolated static let tailLimit = 2_000
 
     /// Mirror the most recent `tailLimit` lines to UserDefaults (called from `append`). Synchronous and
     /// cheap (a single small array write); UserDefaults coalesces the disk flush. `nonisolated` (touches

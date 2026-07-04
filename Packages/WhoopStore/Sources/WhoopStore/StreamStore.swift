@@ -40,6 +40,7 @@ extension WhoopStore {
         return try syncWrite { db in
             var hr = 0, rr = 0, ev = 0, bat = 0
             var spo2 = 0, skin = 0, resp = 0, grav = 0
+            var steps = 0, ppg = 0
             // Reuse one prepared statement per table instead of recompiling the same SQL on every
             // row. This is the hottest write path (every Collector.flush + every Backfiller chunk
             // over potentially millions of historical rows). cachedStatement persists the compiled
@@ -138,6 +139,7 @@ extension WhoopStore {
                     """)
                 for s in streams.steps {
                     try stmt.execute(arguments: [deviceId, s.ts, s.counter, s.activityClass])
+                    steps += db.changesCount
                 }
             }
             // Band sleep_state (#175). Persist-only, same as steps — the strap's OWN @81 high-nibble state
@@ -164,8 +166,12 @@ extension WhoopStore {
                     """)
                 for s in streams.ppgHr {
                     try stmt.execute(arguments: [deviceId, s.ts, s.bpm, s.conf])
+                    ppg += db.changesCount
                 }
             }
+            try WhoopStore.bumpSyncRevision(
+                db,
+                ifChanged: hr + rr + ev + bat + spo2 + skin + resp + grav + steps + ppg)
             return (hr, rr, ev, bat, spo2, skin, resp, grav)
         }
     }

@@ -42,7 +42,7 @@ final class TodayExplainabilityTests: XCTestCase {
                                    carriedDate: "14 Jun",
                                    carriedStale: false)
         XCTAssertEqual(s, .carriedLastNight(date: "14 Jun", stale: false))
-        XCTAssertEqual(s.title, "Last night · 14 Jun")
+        XCTAssertEqual(s.titleText, "Last night · 14 Jun")
     }
 
     func testScoreState_staleCarry_relabelsLatestSleep() {
@@ -53,7 +53,7 @@ final class TodayExplainabilityTests: XCTestCase {
                                    carriedDate: "14 May",
                                    carriedStale: true)
         XCTAssertEqual(s, .carriedLastNight(date: "14 May", stale: true))
-        XCTAssertEqual(s.title, "Latest sleep · 14 May")
+        XCTAssertEqual(s.titleText, "Latest sleep · 14 May")
         XCTAssertEqual(s.accessibilityText,
                        "Latest sleep, 14 May. This is your last scored session. Wear the strap overnight for a fresh score.")
     }

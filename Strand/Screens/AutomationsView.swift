@@ -6,6 +6,7 @@ import StrandDesign
 struct AutomationsView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var behavior: BehaviorStore
+    @EnvironmentObject var live: LiveState
     // PERF: this screen does NOT observe `LiveState`. Its only live-dependent pixel is the "Strap
     // bonded / not connected" pill inside the double-tap card, which is now the `BondStatePill` leaf
     // that owns its own `@EnvironmentObject live`. Observing `live` at this level would re-render the
@@ -42,19 +43,28 @@ struct AutomationsView: View {
                        // path (byte-identical layout) genuinely builds the off-screen cards on demand
                        // instead of constructing all eight/nine + their toggle subtrees up-front.
                        lazy: true) {
-            #if os(iOS)
-            wristAlertsCard
-            #endif
-            doubleTapCard
-            wearCard
-            coachingCard
-            // #766: the strap's silent wake-alarm card used to sit here, which let users conflate it with
-            // the wind-down reminder. It's moved to the dedicated Alarms screen (SmartAlarmView) so every
-            // wake/wind-down control lives in one place. Automations is just inputs-to-actions now.
-            inactivityCard
-            illnessCard
-            healthInsightsCard
-            batteryCard
+            if live.remoteSource != nil {
+                MirroringManagedNotice(
+                    title: "Automations managed on iPhone",
+                    message: "These preferences are mirrored from the iPhone. Edit them on the iPhone while this Mac is mirroring.")
+            }
+            Group {
+                #if os(iOS)
+                wristAlertsCard
+                #endif
+                doubleTapCard
+                wearCard
+                coachingCard
+                // #766: the strap's silent wake-alarm card used to sit here, which let users conflate it with
+                // the wind-down reminder. It's moved to the dedicated Alarms screen (SmartAlarmView) so every
+                // wake/wind-down control lives in one place. Automations is just inputs-to-actions now.
+                inactivityCard
+                illnessCard
+                healthInsightsCard
+                batteryCard
+            }
+            .disabled(live.remoteSource != nil)
+            .opacity(live.remoteSource != nil ? StrandPalette.disabledOpacity : 1)
         }
     }
 

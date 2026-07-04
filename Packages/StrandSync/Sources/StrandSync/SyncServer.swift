@@ -48,14 +48,18 @@ public final class SyncServer {
         do {
             try await conn.start()
             guard case .pullRequest = try await conn.receive() else { return }
-            guard let url = await makeBackup(), let data = try? Data(contentsOf: url) else { return }
-            let chunkSize = 64 * 1024
-            var offset = 0
-            while offset < data.count {
-                let end = min(offset + chunkSize, data.count)
-                try await conn.send(.backupChunk(data.subdata(in: offset..<end)))
-                offset = end
+            guard let url = await makeBackup() else { return }
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            let chunkSize = 256 * 1024
+            var hasher = SHA256()
+            while true {
+                let chunk = try handle.read(upToCount: chunkSize) ?? Data()
+                if chunk.isEmpty { break }
+                hasher.update(data: chunk)
+                try await conn.send(.backupChunk(chunk))
             }
+            try await conn.send(.backupDigest(Data(hasher.finalize())))
             try await conn.send(.done)
         } catch { /* peer dropped / handshake failed — nothing served */ }
     }

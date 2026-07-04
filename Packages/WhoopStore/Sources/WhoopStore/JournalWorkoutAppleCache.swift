@@ -91,6 +91,7 @@ extension WhoopStore {
                                      r.numericValue])
                 n += db.changesCount
             }
+            try WhoopStore.bumpSyncRevision(db, ifChanged: n)
             return n
         }
     }
@@ -104,7 +105,9 @@ extension WhoopStore {
             try db.execute(sql: """
                 DELETE FROM journal WHERE deviceId = ? AND day = ? AND question = ?
                 """, arguments: [deviceId, day, question])
-            return db.changesCount
+            let changed = db.changesCount
+            try WhoopStore.bumpSyncRevision(db, ifChanged: changed)
+            return changed
         }
     }
 
@@ -135,6 +138,7 @@ extension WhoopStore {
                                      r.zonesJSON, r.notes])
                 n += db.changesCount
             }
+            try WhoopStore.bumpSyncRevision(db, ifChanged: n)
             return n
         }
     }
@@ -149,7 +153,9 @@ extension WhoopStore {
                 DELETE FROM workout
                 WHERE deviceId = ? AND sport = ? AND startTs >= ? AND startTs <= ?
                 """, arguments: [deviceId, sport, from, to])
-            return db.changesCount
+            let changed = db.changesCount
+            try WhoopStore.bumpSyncRevision(db, ifChanged: changed)
+            return changed
         }
     }
 
@@ -177,6 +183,7 @@ extension WhoopStore {
                                      r.avgHr, r.maxHr, r.walkingHr, r.weightKg])
                 n += db.changesCount
             }
+            try WhoopStore.bumpSyncRevision(db, ifChanged: n)
             return n
         }
     }

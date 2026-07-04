@@ -16,6 +16,7 @@ import StrandAnalytics
 struct AutoWorkoutCard: View {
 
     @EnvironmentObject var repo: Repository
+    @EnvironmentObject var live: LiveState
 
     /// Whether the toggle is on. Read here too so the card disappears the instant it's switched off.
     @AppStorage(PuffinExperiment.autoDetectWorkoutsKey) private var autoDetectEnabled = false
@@ -29,7 +30,7 @@ struct AutoWorkoutCard: View {
 
     var body: some View {
         Group {
-            if autoDetectEnabled, !handledThisSession, let w = candidate {
+            if live.remoteSource == nil, autoDetectEnabled, !handledThisSession, let w = candidate {
                 card(for: w)
             }
         }
@@ -115,6 +116,7 @@ struct AutoWorkoutCard: View {
     }
 
     private func save(_ w: DetectedWorkout) {
+        guard live.remoteSource == nil else { return }
         saving = true
         handledThisSession = true
         Task {
@@ -125,6 +127,7 @@ struct AutoWorkoutCard: View {
     }
 
     private func dismiss(_ w: DetectedWorkout) {
+        guard live.remoteSource == nil else { return }
         repo.dismissDetectedSuggestion(w)
         handledThisSession = true
         candidate = nil

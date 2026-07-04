@@ -54,11 +54,11 @@ public final class SyncLiveServer: @unchecked Sendable {
 
     private func serve(_ nwconn: NWConnection) async {
         let conn = SyncConnection(nwconn)
-        lock.lock(); let alreadyStopped = stopped; if !alreadyStopped { active.append(conn) }; lock.unlock()
+        let alreadyStopped = addActive(conn)
         if alreadyStopped { conn.cancel(); return }
         defer {
             conn.cancel()
-            lock.lock(); active.removeAll { $0 === conn }; lock.unlock()
+            removeActive(conn)
         }
         do {
             try await conn.start()
@@ -90,6 +90,20 @@ public final class SyncLiveServer: @unchecked Sendable {
                 group.cancelAll()
             }
         } catch { /* peer dropped */ }
+    }
+
+    private func addActive(_ conn: SyncConnection) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let alreadyStopped = stopped
+        if !alreadyStopped { active.append(conn) }
+        return alreadyStopped
+    }
+
+    private func removeActive(_ conn: SyncConnection) {
+        lock.lock()
+        defer { lock.unlock() }
+        active.removeAll { $0 === conn }
     }
 
     public func stop() {

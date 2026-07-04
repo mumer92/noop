@@ -1,6 +1,7 @@
 import SwiftUI
 import StrandDesign
 import StrandAnalytics
+import StrandSync
 import WhoopStore
 
 /// Live workout mode (#238) — the in-exercise screen: a big live heart rate, the current HR zone,
@@ -240,6 +241,196 @@ struct LiveWorkoutView: View {
         case 3: return String(localized: "Aerobic")
         case 4: return String(localized: "Threshold")
         case 5: return String(localized: "Maximum")
+        default: return ""
+        }
+    }
+}
+
+struct RemoteLiveWorkoutView: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var live: LiveState
+    let onClose: () -> Void
+
+    @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.hundred.rawValue
+    private var effortScale: EffortScale { UnitPrefs.resolveEffortScale(effortScaleRaw) }
+    private var session: LiveSessionSnapshot? { live.remoteSession }
+    private var zoneSet: HRZoneSet { HRZones.zones(maxHR: Double(model.profile.hrMax)) }
+    private var displayHR: Int? { session?.currentHr ?? model.bpm }
+    private var zone: Int { displayHR.map { zoneSet.zoneNumber(forBPM: Double($0)) } ?? 0 }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
+                if let session {
+                    header(session)
+                    if let ack = live.remoteCommandAck ?? session.lastCommandAck {
+                        commandAck(ack)
+                    }
+                    heroHeartRate
+                    effortGauge(session)
+                    zoneRail
+                    statsGrid(session)
+                    endButton
+                } else {
+                    MirroringManagedNotice(
+                        title: "Workout ended on iPhone",
+                        message: "The mirrored workout is no longer running.")
+                }
+            }
+            .screenPadding()
+            .padding(.vertical, NoopMetrics.space6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background {
+            ScenicHeroBackground(domain: .effort)
+                .ignoresSafeArea()
+        }
+        .onChangeCompat(of: live.remoteSession == nil) { gone in if gone { onClose() } }
+    }
+
+    private func commandAck(_ ack: String) -> some View {
+        Label(ack, systemImage: "checkmark.circle.fill")
+            .font(StrandFont.caption)
+            .foregroundStyle(StrandPalette.textSecondary)
+            .lineLimit(2)
+    }
+
+    private func header(_ session: LiveSessionSnapshot) -> some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("RECORDING ON IPHONE")
+                    .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                    .foregroundStyle(StrandPalette.metricRose)
+                Text(session.sport)
+                    .font(StrandFont.title1).foregroundStyle(StrandPalette.textPrimary)
+            }
+            Spacer()
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                Text(Self.elapsed(since: Date(timeIntervalSince1970: session.startTs)))
+                    .font(StrandFont.number(34)).monospacedDigit()
+                    .foregroundStyle(StrandPalette.textPrimary)
+            }
+        }
+    }
+
+    private var heroHeartRate: some View {
+        let tint = zone >= 1 ? StrandPalette.hrZoneColor(zone) : StrandPalette.effortColor
+        return NoopCard(padding: NoopMetrics.space6, tint: StrandPalette.effortColor) {
+            VStack(spacing: NoopMetrics.space2) {
+                Text("HEART RATE")
+                    .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                if let bpm = displayHR {
+                    CountUpText(value: Double(bpm),
+                                format: { "\(Int($0.rounded()))" },
+                                font: StrandFont.rounded(80, weight: .semibold),
+                                color: tint)
+                } else {
+                    Text("—")
+                        .font(StrandFont.rounded(80, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
+                Text("bpm").font(StrandFont.subhead).foregroundStyle(StrandPalette.textSecondary)
+                Text(zone >= 1 ? "Zone \(zone) · \(Self.zoneName(zone))" : "Below Zone 1")
+                    .font(StrandFont.captionNumber)
+                    .foregroundStyle(tint)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private func effortGauge(_ session: LiveSessionSnapshot) -> some View {
+        NoopCard(padding: NoopMetrics.cardInnerPadding, tint: StrandPalette.effortColor) {
+            VStack(spacing: NoopMetrics.rowSpacing) {
+                Text("EFFORT BUILDING")
+                    .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                    .foregroundStyle(StrandPalette.effortColor)
+                StrainGauge(
+                    strain: UnitFormatter.effortValue(session.liveStrain, scale: effortScale),
+                    outOf: effortScale == .whoop ? 21 : 100,
+                    diameter: 150, lineWidth: 14, showsHover: false,
+                    valueFormat: { _ in UnitFormatter.effortDisplay(session.liveStrain, scale: effortScale) }
+                )
+                .frame(maxWidth: .infinity)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var zoneRail: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("HR ZONE")
+                .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                .foregroundStyle(StrandPalette.textSecondary)
+            HStack(spacing: 6) {
+                ForEach(1...5, id: \.self) { z in
+                    let active = z == zone
+                    let color = StrandPalette.hrZoneColor(z)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(active ? color : color.opacity(0.18))
+                        .frame(height: active ? 44 : 34)
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(active ? color : StrandPalette.hairline, lineWidth: 1))
+                        .overlay(Text("Z\(z)")
+                            .font(StrandFont.captionNumber)
+                            .foregroundStyle(active ? StrandPalette.surfaceBase : StrandPalette.textTertiary))
+                }
+            }
+            if let band = zoneSet.zones.first(where: { $0.number == zone }) {
+                Text("Zone \(zone): \(Int(band.lower))–\(Int(band.upper)) bpm (\(Int(band.lowerPct * 100))–\(Int(band.upperPct * 100))% max HR)")
+                    .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+            } else {
+                Text("Warming up — keep moving to climb into Zone 1.")
+                    .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+            }
+        }
+    }
+
+    private func statsGrid(_ session: LiveSessionSnapshot) -> some View {
+        HStack(spacing: NoopMetrics.gap) {
+            stat("AVG", session.avgHr > 0 ? "\(session.avgHr)" : "—",
+                 tint: session.avgHr > 0 ? StrandPalette.metricRose : StrandPalette.textPrimary)
+            stat("PEAK", session.peakHr > 0 ? "\(session.peakHr)" : "—",
+                 tint: session.peakHr > 0 ? StrandPalette.metricRose : StrandPalette.textPrimary)
+            stat("EFFORT", UnitFormatter.effortDisplay(session.liveStrain, scale: effortScale),
+                 tint: StrandPalette.strainColor(session.liveStrain))
+        }
+    }
+
+    private func stat(_ title: String, _ value: String, tint: Color = StrandPalette.textPrimary) -> some View {
+        NoopCard(padding: 14, tint: tint) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                Text(value)
+                    .font(StrandFont.number(26))
+                    .foregroundStyle(tint)
+                    .lineLimit(1).minimumScaleFactor(0.6)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var endButton: some View {
+        NoopButton("End workout on iPhone", systemImage: "stop.fill", kind: .destructive, fullWidth: true) {
+            model.endWorkout()
+            onClose()
+        }
+    }
+
+    private static func elapsed(since start: Date) -> String {
+        let s = max(0, Int(Date().timeIntervalSince(start)))
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    private static func zoneName(_ zone: Int) -> String {
+        switch zone {
+        case 1: return "Recovery"
+        case 2: return "Fat burn"
+        case 3: return "Aerobic"
+        case 4: return "Threshold"
+        case 5: return "Maximum"
         default: return ""
         }
     }

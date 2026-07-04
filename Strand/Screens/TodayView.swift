@@ -1209,8 +1209,10 @@ struct TodayView: View {
                 // battery (right). Replaces the big title + the full-width day-nav pill (WHOOP-style).
                 todayTopBar
                 HealthAlertBanner()
+                RelayedMirrorBanner()
                 #else
                 HealthAlertBanner()
+                RelayedMirrorBanner()
                 // Browse past days: chevrons + a date jump capped at today (no future days). Anchored to
                 // the LOGICAL day (the same anchor `selectedLogicalDay` uses) so the full-date label tracks
                 // the data shown in the 00:00-04:00 window instead of jumping a calendar day ahead (#14).
@@ -1295,12 +1297,6 @@ struct TodayView: View {
                 AutoWorkoutCard()
                 // Honest, dismissible 12-hourly donation ask, a card in the flow, never a modal.
                 DonationNudgeCard()
-                #if os(iOS)
-                // iOS entry point to Support (donate + contact). macOS opens the same sheet from the
-                // toolbar heart, but a primary tab on iPhone has no nav bar to host a `.toolbar` item,
-                // so the affordance lives in-content here and presents SupportView as an auto-sized sheet.
-                supportRow
-                #endif
                 sourcesSection
             }
             #if os(iOS)
@@ -1968,7 +1964,7 @@ struct TodayView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Synthesis. \(status)")
+            .accessibilityLabel(Text(verbatim: "Synthesis. \(status)"))
             .accessibilityHint("Collapse")
         } else {
             // Collapsed: a one-liner with the category overline, the status headline and a down-chevron.
@@ -1995,7 +1991,7 @@ struct TodayView: View {
                 }
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Synthesis. \(status)")
+            .accessibilityLabel(Text(verbatim: "Synthesis. \(status)"))
             .accessibilityHint("Expand for the full read")
         }
     }
@@ -2409,7 +2405,7 @@ struct TodayView: View {
         }
         .padding(.vertical, 13)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label): \(value) \(unit)")
+        .accessibilityLabel(Text(verbatim: "\(label): \(value) \(unit)"))
     }
 
     // MARK: Synthesis card, today's read, or the carried last-scored read (#543)
@@ -4540,6 +4536,23 @@ enum MetricTileState: Equatable {
             // "Last night · %@" format keys; the rendered English string is unchanged.
             return stale ? "Latest sleep · \(date)" : "Last night · \(date)"
         case .needsStrap:                   return "Needs the strap"
+        }
+    }
+
+    /// Plain rendered title for tests and non-SwiftUI surfaces. `LocalizedStringKey` keeps interpolation
+    /// metadata, so equality on the key itself is not a stable way to assert the visible words.
+    var titleText: String? {
+        switch self {
+        case .scored:
+            return nil
+        case .calibrating:
+            return String(localized: "Calibrating")
+        case .carriedLastNight(let date, let stale):
+            return stale
+                ? String(localized: "Latest sleep · \(date)")
+                : String(localized: "Last night · \(date)")
+        case .needsStrap:
+            return String(localized: "Needs the strap")
         }
     }
 

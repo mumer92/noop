@@ -121,6 +121,7 @@ extension WhoopStore {
                                      s.restingHr, s.avgHrv, s.stagesJSON, s.userEdited, s.startTsAdjusted])
                 n += db.changesCount
             }
+            try WhoopStore.bumpSyncRevision(db, ifChanged: n)
             return n
         }
     }
@@ -142,7 +143,9 @@ extension WhoopStore {
                 SET startTsAdjusted = ?, endTs = ?, stagesJSON = COALESCE(?, stagesJSON), userEdited = 1
                 WHERE deviceId = ? AND startTs = ?
                 """, arguments: [newStartTs, newEndTs, stagesJSON, deviceId, detectedStartTs])
-            return db.changesCount
+            let changed = db.changesCount
+            try WhoopStore.bumpSyncRevision(db, ifChanged: changed)
+            return changed
         }
     }
 
@@ -158,7 +161,9 @@ extension WhoopStore {
         try syncWrite { db in
             try db.execute(sql: "DELETE FROM sleepSession WHERE deviceId = ? AND startTs = ?",
                            arguments: [deviceId, startTs])
-            return db.changesCount
+            let changed = db.changesCount
+            try WhoopStore.bumpSyncRevision(db, ifChanged: changed)
+            return changed
         }
     }
 
@@ -185,7 +190,9 @@ extension WhoopStore {
                 VALUES (?, ?, ?, ?, NULL, NULL, ?, 1, NULL)
                 ON CONFLICT(deviceId, startTs) DO NOTHING
                 """, arguments: [deviceId, startTs, endTs, efficiency, stagesJSON])
-            return db.changesCount
+            let changed = db.changesCount
+            try WhoopStore.bumpSyncRevision(db, ifChanged: changed)
+            return changed
         }
     }
 
@@ -205,7 +212,9 @@ extension WhoopStore {
                 SET stagesJSON = ?
                 WHERE deviceId = ? AND startTs = ? AND userEdited = 1
                 """, arguments: [stagesJSON, deviceId, detectedStartTs])
-            return db.changesCount
+            let changed = db.changesCount
+            try WhoopStore.bumpSyncRevision(db, ifChanged: changed)
+            return changed
         }
     }
 
@@ -229,7 +238,9 @@ extension WhoopStore {
                 UPDATE sleepSession SET motionJSON = ?
                 WHERE deviceId = ? AND startTs = ?
                 """, arguments: [json, deviceId, sessionStart])
-            return db.changesCount
+            let changed = db.changesCount
+            try WhoopStore.bumpSyncRevision(db, ifChanged: changed)
+            return changed
         }
     }
 
@@ -255,7 +266,9 @@ extension WhoopStore {
                 UPDATE sleepSession SET sleepStateJSON = ?
                 WHERE deviceId = ? AND startTs = ?
                 """, arguments: [json, deviceId, sessionStart])
-            return db.changesCount
+            let changed = db.changesCount
+            try WhoopStore.bumpSyncRevision(db, ifChanged: changed)
+            return changed
         }
     }
 
@@ -321,6 +334,7 @@ extension WhoopStore {
                                      d.steps, d.activeKcalEst])
                 n += db.changesCount
             }
+            try WhoopStore.bumpSyncRevision(db, ifChanged: n)
             return n
         }
     }
@@ -338,7 +352,9 @@ extension WhoopStore {
                 DELETE FROM dailyMetric
                 WHERE deviceId = ? AND day >= ? AND day <= ?
                 """, arguments: [deviceId, from, to])
-            return db.changesCount
+            let changed = db.changesCount
+            try WhoopStore.bumpSyncRevision(db, ifChanged: changed)
+            return changed
         }
     }
 

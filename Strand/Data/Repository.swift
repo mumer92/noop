@@ -571,6 +571,14 @@ final class Repository: ObservableObject {
         do { try await store.checkpointWAL(); return true } catch { return false }
     }
 
+    /// Monotonic content revision for Local Sync. Unlike `refreshSeq`, this advances at the database
+    /// write boundary, so a paired Mac can pull after imports/offloads/manual writes even before a
+    /// dashboard refresh republishes visible caches.
+    func syncRevision() async -> UInt64 {
+        guard let store = await ensureStore() else { return 0 }
+        return (try? await store.syncRevision()) ?? 0
+    }
+
     /// One refresh's fully-merged dashboard caches, computed OFF the main actor (FIX 3) and applied to the
     /// `@Published` props in a single main-actor batch. Every member is an `Equatable` value type. NOT
     /// marked `Sendable` (its `DailyMetric`/`CachedSleepSession` members aren't formally `Sendable`); it

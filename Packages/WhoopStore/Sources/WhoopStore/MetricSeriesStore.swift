@@ -41,6 +41,7 @@ extension WhoopStore {
                     """, arguments: [deviceId, r.day, r.key, r.value])
                 n += db.changesCount
             }
+            try WhoopStore.bumpSyncRevision(db, ifChanged: n)
             return n
         }
     }

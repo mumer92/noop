@@ -23,6 +23,7 @@ struct WorkoutsView: View {
     /// Quick-action FAB or the tab) had no way to begin one from the obvious place. Injected here so the
     /// header/empty-state can start a live session and present the in-exercise view directly.
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var live: LiveState
     @State private var showLiveWorkout = false
     @State private var showStartSport = false
 
@@ -133,6 +134,11 @@ struct WorkoutsView: View {
                        // The day-of-sky liquid backdrop, matching Today / Health / Sleep / Trends: a fixed,
                        // full-bleed time-of-day sky behind the scroll content (it does not scroll).
                        topBackground: liquidScaffoldSky()) {
+            if live.remoteSource != nil {
+                MirroringManagedNotice(
+                    title: "Manual workout edits managed on iPhone",
+                    message: "This Mac can start or end the iPhone's live workout, but manual workout edits are read-only while mirroring.")
+            }
             if allRows.isEmpty {
                 VStack(alignment: .leading, spacing: NoopMetrics.space4) {
                     ComingSoon(what: loaded
@@ -192,8 +198,12 @@ struct WorkoutsView: View {
         .onChange(of: range) { newRange in
             Task { await expandWindowIfNeeded(for: newRange == .all ? .all : effectiveRange) }
         }
+        .onChangeCompat(of: live.remoteSession != nil) { active in
+            if active { showLiveWorkout = true }
+        }
         .sheet(item: $sheet) { target in
             ManualWorkoutSheet(editing: target.editing) { row, replacing in
+                guard live.remoteSource == nil else { return }
                 Task {
                     await repo.saveManualWorkout(row, replacing: replacing)
                     // #598: rescore the just-added workout from the strap's HR for its window NOW, so its
@@ -225,17 +235,23 @@ struct WorkoutsView: View {
         // #459: the in-exercise view, presented when Start Workout is tapped here (same screen LiveView
         // shows). activeWorkout is global on AppModel, so ending it from either surface stays in sync.
         .sheet(isPresented: $showLiveWorkout) {
-            LiveWorkoutView(onClose: { showLiveWorkout = false })
-                // Inject the shared live snapshot so the in-exercise sensor readout (speed/cadence/power)
-                // resolves here too, matching how LiveView presents the same screen.
-                .environmentObject(model.live)
+            if model.activeWorkout != nil {
+                LiveWorkoutView(onClose: { showLiveWorkout = false })
+                    // Inject the shared live snapshot so the in-exercise sensor readout (speed/cadence/power)
+                    // resolves here too, matching how LiveView presents the same screen.
+                    .environmentObject(model.live)
+            } else if live.remoteSession != nil {
+                RemoteLiveWorkoutView(onClose: { showLiveWorkout = false })
+                    .environmentObject(model)
+                    .environmentObject(live)
+            }
         }
         // #519: name the sport before a live session starts, then open the in-exercise view directly
         // (same direct present as the button's already-active path — no cross-view auto-present race).
         .sheet(isPresented: $showStartSport) {
             StartWorkoutSheet { name in
                 model.startWorkout(sport: name)
-                showLiveWorkout = true
+                if live.remoteSource == nil { showLiveWorkout = true }
             }
         }
         // #64: name the merged session when every selected row is a bare detected bout (there's no sport
@@ -495,6 +511,7 @@ struct WorkoutsView: View {
         NoopButton("Add workout", systemImage: "plus", kind: .secondary) {
             sheet = WorkoutSheetTarget(editing: nil)
         }
+        .disabled(live.remoteSource != nil)
         .accessibilityLabel("Add a workout")
     }
 
@@ -502,15 +519,16 @@ struct WorkoutsView: View {
     /// place people instinctively look — instead of only from the Live screen. Starts the session and
     /// presents the in-exercise view directly (no cross-view auto-present race with LiveView's sheet).
     private var startLiveWorkoutButton: some View {
-        NoopButton(model.activeWorkout == nil ? "Start workout" : "View active workout",
-                   systemImage: model.activeWorkout == nil ? "figure.run" : "timer",
+        let hasActive = model.activeWorkout != nil || live.remoteSession != nil
+        return NoopButton(hasActive ? "View active workout" : "Start workout",
+                   systemImage: hasActive ? "timer" : "figure.run",
                    kind: .primary) {
             // No active session → pick a named sport first (#519), then the sheet's onStart begins it
             // and opens the in-exercise view. Already active → jump straight back into the live view.
-            if model.activeWorkout == nil { showStartSport = true }
+            if !hasActive { showStartSport = true }
             else { showLiveWorkout = true }
         }
-        .accessibilityLabel(model.activeWorkout == nil ? "Start a workout" : "View the active workout")
+        .accessibilityLabel(hasActive ? "View the active workout" : "Start a workout")
     }
 
     /// The latest session start (anchors every window — windows are relative to the
@@ -1186,6 +1204,8 @@ struct WorkoutsView: View {
                 rowActionsMenu(row)
                     .frame(width: ColWidth.action, alignment: .trailing)
                     .padding(.trailing, NoopMetrics.cardPadding)
+                    .disabled(live.remoteSource != nil)
+                    .opacity(live.remoteSource != nil ? StrandPalette.disabledOpacity : 1)
             }
         }
         .contextMenu { if !selectionMode { rowMenu(row) } }
@@ -1337,23 +1357,28 @@ struct WorkoutsView: View {
     /// deleted. Imported WHOOP / Apple rows are read-only (we never rewrite imported history).
     @ViewBuilder
     private func rowMenu(_ row: WorkoutRow) -> some View {
-        switch WorkoutSource.classify(row.source) {
-        case .detected:
-            Menu("Re-label as") {
-                ForEach(Self.relabelSports, id: \.self) { sport in
-                    Button(sport) { relabel(row, to: sport) }
+        if live.remoteSource != nil {
+            Button("Managed on iPhone while mirroring") { }
+                .disabled(true)
+        } else {
+            switch WorkoutSource.classify(row.source) {
+            case .detected:
+                Menu("Re-label as") {
+                    ForEach(Self.relabelSports, id: \.self) { sport in
+                        Button(sport) { relabel(row, to: sport) }
+                    }
                 }
+                Button("Edit details…") { editWorkout(row) }
+                Divider()
+                Button("Dismiss (not a workout)", role: .destructive) { dismiss(row) }
+            case .manual:
+                Button("Edit…") { editWorkout(row) }
+                Divider()
+                Button("Delete", role: .destructive) { delete(row) }
+            case .whoop, .apple, .lifting, .activityFile:
+                // Imported history is read-only; offer a copy-to-manual edit path that doesn't touch it.
+                Button("Duplicate as manual…") { editWorkout(asManualCopy(row)) }
             }
-            Button("Edit details…") { editWorkout(row) }
-            Divider()
-            Button("Dismiss (not a workout)", role: .destructive) { dismiss(row) }
-        case .manual:
-            Button("Edit…") { editWorkout(row) }
-            Divider()
-            Button("Delete", role: .destructive) { delete(row) }
-        case .whoop, .apple, .lifting, .activityFile:
-            // Imported history is read-only; offer a copy-to-manual edit path that doesn't touch it.
-            Button("Duplicate as manual…") { editWorkout(asManualCopy(row)) }
         }
     }
 

@@ -16,6 +16,7 @@ struct SmartAlarmView: View {
     // alarm over BLE) and the behavior store (the alarm's persisted on/time/weekdays).
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var behavior: BehaviorStore
+    @EnvironmentObject private var live: LiveState
 
     @State private var windDownOn = WindDownNudge.isEnabled
     /// Earliest wake time the nudge is derived from (minutes since midnight). Seeded from the store.
@@ -27,7 +28,7 @@ struct SmartAlarmView: View {
     @State private var perDayOn = WindDownNudge.hasPerDayOverrides
     @State private var overrides: [Int: Int] = WindDownNudge.perDayWakeOverrides
     /// Calendar weekday numbers laid out Monday-first (Mon…Sun → 2,3,4,5,6,7,1), matching AutomationsView.
-    private static let weekdayOrder = [2, 3, 4, 5, 6, 7, 1]
+    nonisolated private static let weekdayOrder = [2, 3, 4, 5, 6, 7, 1]
 
     var body: some View {
         // #766: retitled to "Alarms" because it now holds BOTH the strap's silent wake-alarm and the
@@ -35,10 +36,19 @@ struct SmartAlarmView: View {
         ScreenScaffold(title: "Alarms",
                        subtitle: "Your strap wake-alarm and the evening wind-down reminder, in one place.") {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionGap) {
-                windowHero
-                strapAlarmCard
-                honestyCard
-                windDownCard
+                if live.remoteSource != nil {
+                    MirroringManagedNotice(
+                        title: "Alarms managed on iPhone",
+                        message: "Wake and wind-down alarm preferences are mirrored from the iPhone. Edit them on the iPhone while this Mac is mirroring.")
+                }
+                Group {
+                    windowHero
+                    strapAlarmCard
+                    honestyCard
+                    windDownCard
+                }
+                .disabled(live.remoteSource != nil)
+                .opacity(live.remoteSource != nil ? StrandPalette.disabledOpacity : 1)
             }
         }
     }

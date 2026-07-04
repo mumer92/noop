@@ -6,7 +6,7 @@ import StrandAnalytics
 import StrandImport
 import StrandSync
 #if os(iOS)
-import UserNotifications
+@preconcurrency import UserNotifications
 #endif
 
 /// Data source currently running an import from the Data Sources screen.
@@ -146,6 +146,7 @@ final class AppModel: ObservableObject {
 
     private var lastDoubleTapAt: Date = .distantPast
     private var lastCoachZone: Int = -1
+    private var lastSyncCommandAck: String?
     // L3 stress-onset detector state: a rolling R-R buffer + the replay-safe detector state (persisted
     // via BiofeedbackPrefs so a relaunch can't re-fire), carried verbatim between evaluations.
     private var rrBuf: [Int] = []
@@ -380,6 +381,15 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 SyncSettingsBridge.restoreOwn(profile: self.profile)
             }
+            self.sync.sessionProvider = { [weak self] in
+                self?.liveSessionSnapshot()
+            }
+            self.sync.commandAckProvider = { [weak self] in
+                self?.lastSyncCommandAck
+            }
+            #if os(macOS)
+            SyncSettingsBridge.restoreIfStranded(profile: self.profile)
+            #endif
             self.sync.startIfEnabled()                         // opt-in local-network sync (inert until paired)
             await self.wireSourceCoordinator()                 // dormant unless a generic strap is active
             try? await Task.sleep(nanoseconds: 6_000_000_000)  // give the first offload a moment
@@ -651,6 +661,20 @@ final class AppModel: ObservableObject {
         activeWorkout = w
     }
 
+    private func liveSessionSnapshot() -> LiveSessionSnapshot? {
+        guard let w = activeWorkout else { return nil }
+        let now = Date()
+        return LiveSessionSnapshot(
+            sport: w.sport,
+            startTs: w.start.timeIntervalSince1970,
+            elapsed: now.timeIntervalSince(w.start),
+            currentHr: bpm,
+            liveStrain: w.liveStrain,
+            avgHr: w.avgHr,
+            peakHr: w.peakHr,
+            lastCommandAck: lastSyncCommandAck)
+    }
+
     /// Finish the active workout: finalize the GPS route (#524), score the captured HR window, and save it
     /// as a `WorkoutRow`. A session with no HR window AND no real GPS route is discarded quietly (parity
     /// with Android) , but a GPS-only walk with HR not streaming still saves. Double-buzz confirms.
@@ -818,16 +842,23 @@ final class AppModel: ObservableObject {
     /// picked (persisted under "selectedWhoopModel"), so every scan entry point ,
     /// Live, onboarding, the menu bar, Settings , honours the same choice.
     func scan(model: WhoopModel? = nil) {
+        guard !sync.isRelaying else { return }
         let chosen = model
             ?? UserDefaults.standard.string(forKey: "selectedWhoopModel").flatMap(WhoopModel.init(rawValue:))
             ?? .whoop4
         ble.connect(model: chosen)
     }
-    func disconnect() { ble.disconnect() }
+    func disconnect() {
+        guard !sync.isRelaying else { return }
+        ble.disconnect()
+    }
 
     /// Drop the current strap and clear bond state so a newly-picked strap model connects fresh
     /// (lets a user with both a WHOOP 4 and a 5/MG switch between them).
-    func prepareStrapSwitch() { ble.prepareForModelSwitch() }
+    func prepareStrapSwitch() {
+        guard !sync.isRelaying else { return }
+        ble.prepareForModelSwitch()
+    }
 
     // MARK: - Add-a-device wizard (WHOOP present-scan + register/activate)
     //
@@ -855,6 +886,7 @@ final class AppModel: ObservableObject {
     /// allowing present scan). The persisted `selectedWhoopModel` is updated too, so a later real
     /// connect to the chosen strap targets the right family. All via existing public methods.
     func presentWhoopScan(model: WhoopModel) {
+        guard !sync.isRelaying else { return }
         UserDefaults.standard.set(model.rawValue, forKey: "selectedWhoopModel")
         ble.prepareForPresentScan(model: model) // idle for a family switch, but KEEP a live same-family bond (#74)
         ble.connect(model: model)             // select the family (sets engine selectedModel + framing)
@@ -862,7 +894,10 @@ final class AppModel: ObservableObject {
     }
 
     /// End the WHOOP present-scan (idempotent). Call on leaving the wizard's pick step / on dismiss.
-    func stopWhoopScan() { ble.stopWhoopScan() }
+    func stopWhoopScan() {
+        guard !sync.isRelaying else { return }
+        ble.stopWhoopScan()
+    }
 
     /// Register a paired device and (optionally) make it the active one. The Add-a-device wizard's
     /// single write path: `add` upserts the row, and when `makeActive` is true `setActive` promotes it
@@ -973,7 +1008,10 @@ final class AppModel: ObservableObject {
         ble.startRealtime()
     }
     /// Ask the strap for a fresh battery reading.
-    func getBattery() { ble.refreshBattery() }
+    func getBattery() {
+        if sync.isRelaying { sync.sendCommand(.refreshBattery); return }
+        ble.refreshBattery()
+    }
 
     /// Execute a command relayed from a paired Mac on the strap (the band is bonded to this iPhone, so
     /// all band actions run here). Same entry points the iPhone's own UI uses.
@@ -993,6 +1031,41 @@ final class AppModel: ObservableObject {
         case .disconnect:                ble.disconnect()
         case .refreshBattery:            ble.refreshBattery()
         }
+        lastSyncCommandAck = syncAckMessage(for: cmd)
+    }
+
+    private func syncAckMessage(for cmd: SyncCommand) -> String {
+        let action: String
+        switch cmd {
+        case .buzz:
+            action = "Buzz sent"
+        case .buzzPattern(_, _):
+            action = "Buzz pattern sent"
+        case .stopHaptics:
+            action = "Haptics stopped"
+        case .armAlarm:
+            action = "Alarm armed"
+        case .disableAlarm:
+            action = "Alarm disabled"
+        case .startWorkout(let sport):
+            action = "Workout start sent: \(sport)"
+        case .endWorkout:
+            action = "Workout end sent"
+        case .startRealtime:
+            action = "Live feed started"
+        case .stopRealtime:
+            action = "Live feed stopped"
+        case .syncNow:
+            action = "History sync requested"
+        case .scan:
+            action = "Scan requested"
+        case .disconnect:
+            action = "Disconnect requested"
+        case .refreshBattery:
+            action = "Battery refresh requested"
+        }
+        let stamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        return "\(action) at \(stamp)"
     }
 
     /// Fire a haptic buzz on the strap. patternId=2 is the graduated buzz confirmed on-device;
@@ -1077,14 +1150,15 @@ final class AppModel: ObservableObject {
     /// identifier per category means a new alert replaces the old one rather than stacking.
     private static func postWristAlert(identifier: String, title: String, body: String) {
         guard UserDefaults.standard.bool(forKey: wristAlertsMasterKey) else { return }
-        let center = UNUserNotificationCenter.current()
-        center.getNotificationSettings { settings in
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
             guard settings.authorizationStatus == .authorized else { return }
             let content = UNMutableNotificationContent()
             content.title = title
             content.body = body
             content.sound = .default
-            center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+            UNUserNotificationCenter.current().add(
+                UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+            )
         }
     }
     #endif
@@ -1122,9 +1196,11 @@ final class AppModel: ObservableObject {
                                                      log: ((String) -> Void)? = nil) {
         #if os(iOS)
         let center = UNUserNotificationCenter.current()
+        let backupId = smartAlarmBackupId
+        let backupIds = smartAlarmBackupIds
         // Always clear BOTH the single and the per-day ids so switching modes (or editing the weekday set)
         // never leaves an orphaned trigger or double-fires.
-        center.removePendingNotificationRequests(withIdentifiers: smartAlarmBackupIds)
+        center.removePendingNotificationRequests(withIdentifiers: backupIds)
         guard UserDefaults.standard.bool(forKey: wristAlertsMasterKey) else {
             log?("Smart alarm: backup notification NOT scheduled (wrist-alerts master is off)")
             return
@@ -1148,7 +1224,9 @@ final class AppModel: ObservableObject {
                 comps.hour = hour
                 comps.minute = minute
                 let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
-                center.add(UNNotificationRequest(identifier: smartAlarmBackupId, content: content, trigger: trigger))
+                UNUserNotificationCenter.current().add(
+                    UNNotificationRequest(identifier: backupId, content: content, trigger: trigger)
+                )
             } else {
                 for weekday in valid {
                     var comps = DateComponents()
@@ -1156,8 +1234,10 @@ final class AppModel: ObservableObject {
                     comps.hour = hour
                     comps.minute = minute
                     let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
-                    center.add(UNNotificationRequest(identifier: "\(smartAlarmBackupId)-d\(weekday)",
-                                                     content: content, trigger: trigger))
+                    UNUserNotificationCenter.current().add(
+                        UNNotificationRequest(identifier: "\(backupId)-d\(weekday)",
+                                              content: content, trigger: trigger)
+                    )
                 }
             }
         }
@@ -1330,7 +1410,7 @@ final class AppModel: ObservableObject {
         let mark = SleepMark(type: .bedtime, at: date)
         Task { [weak self] in
             guard let self, let store = await self.repo.storeHandle() else { return }
-            try? await store.upsertMetricSeries([mark.metricPoint], deviceId: self.repo.deviceId)
+            _ = try? await store.upsertMetricSeries([mark.metricPoint], deviceId: self.repo.deviceId)
         }
     }
 

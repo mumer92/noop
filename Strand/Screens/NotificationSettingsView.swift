@@ -13,19 +13,28 @@ struct NotificationSettingsView: View {
         ScreenScaffold(title: "Notifications",
                        subtitle: "Buzz your strap when these apps notify you. Everything runs on \(Platform.deviceNounPhrase).") {
             VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
-                masterCard
-                    .staggeredAppear(index: 0)
-                if store.activeCategories.isEmpty {
-                    emptyAppsCard
-                        .staggeredAppear(index: 1)
-                } else {
-                    ForEach(Array(store.activeCategories.enumerated()), id: \.element.id) { idx, cat in
-                        categoryCard(cat, apps: store.apps(in: cat))
-                            .staggeredAppear(index: idx + 1)
-                    }
+                if live.remoteSource != nil {
+                    MirroringManagedNotice(
+                        title: "Notifications managed on iPhone",
+                        message: "Notification and wrist-alert preferences are mirrored from the iPhone. Edit them on the iPhone while this Mac is mirroring.")
                 }
-                behaviourCard
-                    .staggeredAppear(index: store.activeCategories.count + 1)
+                Group {
+                    masterCard
+                        .staggeredAppear(index: 0)
+                    if store.activeCategories.isEmpty {
+                        emptyAppsCard
+                            .staggeredAppear(index: 1)
+                    } else {
+                        ForEach(Array(store.activeCategories.enumerated()), id: \.element.id) { idx, cat in
+                            categoryCard(cat, apps: store.apps(in: cat))
+                                .staggeredAppear(index: idx + 1)
+                        }
+                    }
+                    behaviourCard
+                        .staggeredAppear(index: store.activeCategories.count + 1)
+                }
+                .disabled(live.remoteSource != nil)
+                .opacity(live.remoteSource != nil ? StrandPalette.disabledOpacity : 1)
             }
         }
     }

@@ -2,6 +2,13 @@ import Foundation
 import Network
 import CryptoKit
 
+private final class SnapshotHeartbeat: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = Date.distantFuture
+    func mark() { lock.lock(); value = Date(); lock.unlock() }
+    var age: TimeInterval { lock.lock(); defer { lock.unlock() }; return Date().timeIntervalSince(value) }
+}
+
 /// The live channel subscriber (Mac). Holds a persistent TLS-PSK connection to the paired iPhone,
 /// sends `.subscribeLive`, and forwards each decoded `LiveSnapshot` / `historyChanged` via callbacks.
 /// Reports link up/down so the app can revert to "not connected" when the stream ends.
@@ -13,6 +20,7 @@ public final class SyncLiveClient: @unchecked Sendable {
     private let onSettings: @Sendable (SyncSettings) -> Void
     private var conn: SyncConnection?
     private var task: Task<Void, Never>?
+    private var watchdogTask: Task<Void, Never>?
 
     public init(psk: SymmetricKey, peerToPeer: Bool = false,
                 onSnapshot: @escaping @Sendable (LiveSnapshot) -> Void,
@@ -29,15 +37,19 @@ public final class SyncLiveClient: @unchecked Sendable {
     public func connect(to endpoint: NWEndpoint) {
         disconnect()
         let c = SyncConnection(NWConnection(to: endpoint, using: params))
+        let heartbeat = SnapshotHeartbeat()
         conn = c
         task = Task { [onSnapshot, onHistoryChanged, onConnectionChange, onSettings] in
             do {
                 try await c.start()
                 try await c.send(.subscribeLive)
                 onConnectionChange(true)
+                heartbeat.mark()
                 while !Task.isCancelled {
                     switch try await c.receive() {
-                    case .liveSnapshot(let data): if let s = LiveSnapshot(data: data) { onSnapshot(s) }
+                    case .liveSnapshot(let data):
+                        heartbeat.mark()
+                        if let s = LiveSnapshot(data: data) { onSnapshot(s) }
                     case .historyChanged(let rev): onHistoryChanged(rev)
                     case .settings(let data): if let s = SyncSettings(data: data) { onSettings(s) }
                     default: break
@@ -45,6 +57,15 @@ public final class SyncLiveClient: @unchecked Sendable {
                 }
             } catch { /* link dropped */ }
             onConnectionChange(false)
+        }
+        watchdogTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if heartbeat.age > 5 {
+                    c.cancel()
+                    return
+                }
+            }
         }
     }
 
@@ -55,6 +76,7 @@ public final class SyncLiveClient: @unchecked Sendable {
     }
 
     public func disconnect() {
+        watchdogTask?.cancel(); watchdogTask = nil
         task?.cancel(); task = nil
         conn?.cancel(); conn = nil
     }

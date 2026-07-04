@@ -20,6 +20,11 @@ import Foundation
     #expect(SyncMessage.decode(SyncMessage.backupChunk(chunk).encoded()) == .backupChunk(chunk))
 }
 
+@Test func message_backupDigest_roundTrips() {
+    let digest = Data(repeating: 0xAB, count: 32)
+    #expect(SyncMessage.decode(SyncMessage.backupDigest(digest).encoded()) == .backupDigest(digest))
+}
+
 @Test func message_done_roundTrips() {
     #expect(SyncMessage.decode(SyncMessage.done.encoded()) == .done)
 }

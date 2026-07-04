@@ -1,480 +1,483 @@
 {
-  "sourceLanguage": "en",
-  "strings": {
-    "%@ %lld": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ %lld"
+  "sourceLanguage" : "en",
+  "strings" : {
+    "%@ %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ %lld"
           }
         }
       }
     },
-    "%@ calibrating": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ calibrating"
+    "%@ calibrating" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ calibrating"
           }
         }
       }
     },
-    "%@ unavailable": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ unavailable"
+    "%@ unavailable" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ unavailable"
           }
         }
       }
     },
-    "Charge": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ladung"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Carga"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Carica"
-          }
-        },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Заряд"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "能量"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "能量"
+    "a while ago" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "a while ago"
           }
         }
       }
     },
-    "Charge %lld out of 100": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge %lld out of 100"
+    "cal" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "cal"
           }
         }
       }
     },
-    "Charge %lld · %lld bpm%@": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge %lld · %lld bpm%@"
-          }
-        }
-      }
-    },
-    "Charge %lld%@": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge %lld%@"
-          }
-        }
-      }
-    },
-    "Charge calibrating": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge calibrating"
-          }
-        }
-      }
-    },
-    "Charge calibrating, needs more data": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge calibrating, needs more data"
-          }
-        }
-      }
-    },
-    "Charge out of date, last synced %@. Open NOOP on iPhone.": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge out of date, last synced %@. Open NOOP on iPhone."
-          }
-        }
-      }
-    },
-    "Charge stale · %@": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge stale · %@"
-          }
-        }
-      }
-    },
-    "Charge unavailable": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge unavailable"
-          }
-        }
-      }
-    },
-    "Charge · %@": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge · %@"
-          }
-        }
-      }
-    },
-    "Charge · cal": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge · cal"
-          }
-        }
-      }
-    },
-    "Charge –": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Charge –"
-          }
-        }
-      }
-    },
-    "Effort": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Anstrengung"
+    "Charge" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ladung"
           }
         },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Effort"
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge"
           }
         },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Esfuerzo"
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Carga"
           }
         },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Effort"
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge"
           }
         },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sforzo"
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Carica"
           }
         },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Усилие"
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заряд"
           }
         },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "消耗"
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "能量"
           }
         },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "消耗"
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "能量"
           }
         }
       }
     },
-    "NOOP Charge": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "NOOP Charge"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Carga de NOOP"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Carica NOOP"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "NOOP 能量"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "NOOP 能量"
+    "Charge –" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge –"
           }
         }
       }
     },
-    "NOOP · open on iPhone": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "NOOP · open on iPhone"
+    "Charge · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge · %@"
           }
         }
       }
     },
-    "NOOP. %@, %@, %@.": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "NOOP. %@, %@, %@."
+    "Charge · cal" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge · cal"
           }
         }
       }
     },
-    "NOOP. No data yet, open NOOP on your iPhone to sync.": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "NOOP. No data yet, open NOOP on your iPhone to sync."
+    "Charge %lld · %lld bpm%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge %lld · %lld bpm%@"
           }
         }
       }
     },
-    "NOOP. Scores out of date, last synced %@. Open NOOP on iPhone to refresh.": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "NOOP. Scores out of date, last synced %@. Open NOOP on iPhone to refresh."
+    "Charge %lld out of 100" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge %lld out of 100"
           }
         }
       }
     },
-    "No data, open NOOP on iPhone": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No data, open NOOP on iPhone"
+    "Charge %lld%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge %lld%@"
           }
         }
       }
     },
-    "Open NOOP": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open NOOP"
+    "Charge calibrating" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge calibrating"
           }
         }
       }
     },
-    "Rest": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ruhe"
+    "Charge calibrating, needs more data" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge calibrating, needs more data"
+          }
+        }
+      }
+    },
+    "Charge out of date, last synced %@. Open NOOP on iPhone." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge out of date, last synced %@. Open NOOP on iPhone."
+          }
+        }
+      }
+    },
+    "Charge stale · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge stale · %@"
+          }
+        }
+      }
+    },
+    "Charge unavailable" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Charge unavailable"
+          }
+        }
+      }
+    },
+    "Effort" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anstrengung"
           }
         },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rest"
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Effort"
           }
         },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Descanso"
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esfuerzo"
           }
         },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Repos"
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Effort"
           }
         },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Riposo"
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sforzo"
           }
         },
-        "ru": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Отдых"
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Усилие"
           }
         },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "休息"
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "消耗"
           }
         },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "休息"
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "消耗"
           }
         }
       }
     },
-    "Your Charge (recovery) on the watch face, with Effort and Rest in the rectangular card.": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Your Charge (recovery) on the watch face, with Effort and Rest in the rectangular card."
+    "No data, open NOOP on iPhone" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No data, open NOOP on iPhone"
+          }
+        }
+      }
+    },
+    "NOOP" : {
+
+    },
+    "NOOP · open on iPhone" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NOOP · open on iPhone"
+          }
+        }
+      }
+    },
+    "NOOP Charge" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NOOP Charge"
           }
         },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tu Carga (recuperación) en la esfera del reloj, con Esfuerzo y Descanso en la tarjeta rectangular."
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Carga de NOOP"
           }
         },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La tua Carica (recupero) sul quadrante, con Sforzo e Riposo nella scheda rettangolare."
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Carica NOOP"
           }
         },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "表盘上显示你的能量（恢复），矩形卡片中显示消耗和休息。"
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NOOP 能量"
           }
         },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "錶面上顯示你的能量（恢復），矩形卡片中則是消耗與休息。"
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NOOP 能量"
           }
         }
       }
     },
-    "a while ago": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "a while ago"
+    "NOOP. %@, %@, %@." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NOOP. %@, %@, %@."
           }
         }
       }
     },
-    "cal": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "cal"
+    "NOOP. No data yet, open NOOP on your iPhone to sync." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NOOP. No data yet, open NOOP on your iPhone to sync."
           }
         }
       }
     },
-    "old": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "old"
+    "NOOP. Scores out of date, last synced %@. Open NOOP on iPhone to refresh." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NOOP. Scores out of date, last synced %@. Open NOOP on iPhone to refresh."
           }
         }
       }
     },
-    "open iPhone": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "open iPhone"
+    "old" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "old"
           }
         }
       }
     },
-    "stale": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "stale"
+    "open iPhone" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "open iPhone"
+          }
+        }
+      }
+    },
+    "Open NOOP" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open NOOP"
+          }
+        }
+      }
+    },
+    "Rest" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ruhe"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rest"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Descanso"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Repos"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riposo"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отдых"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "休息"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "休息"
+          }
+        }
+      }
+    },
+    "stale" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "stale"
+          }
+        }
+      }
+    },
+    "Your Charge (recovery) on the watch face, with Effort and Rest in the rectangular card." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your Charge (recovery) on the watch face, with Effort and Rest in the rectangular card."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tu Carga (recuperación) en la esfera del reloj, con Esfuerzo y Descanso en la tarjeta rectangular."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La tua Carica (recupero) sul quadrante, con Sforzo e Riposo nella scheda rettangolare."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "表盘上显示你的能量（恢复），矩形卡片中显示消耗和休息。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "錶面上顯示你的能量（恢復），矩形卡片中則是消耗與休息。"
           }
         }
       }
     }
   },
-  "version": "1.0"
+  "version" : "1.0"
 }

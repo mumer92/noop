@@ -10,6 +10,7 @@ import StrandDesign
 /// unknown (we never invent mg), the active hint covers the dose-unknown case in words, and the copy
 /// states it's an estimate from what was logged.
 struct CaffeineLogCard: View {
+    @EnvironmentObject var live: LiveState
     /// Single-user state owned here (UserDefaults-backed), so hosting needs no app-level injection.
     @StateObject private var store = CaffeineLogStore()
 
@@ -33,6 +34,11 @@ struct CaffeineLogCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             SectionHeader("Caffeine", overline: "Log")
+            if live.remoteSource != nil {
+                MirroringManagedNotice(
+                    title: "Caffeine managed on iPhone",
+                    message: "Caffeine entries are mirrored from the iPhone. Log or remove intakes there while this Mac is mirroring.")
+            }
             NoopCard(tint: StrandPalette.accent) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Log a coffee, tea, or energy drink and NOOP shows a rough estimate of how much may still be active. It's a guide based on a typical 5 to 6 hour half-life, not a measurement.")
@@ -80,6 +86,8 @@ struct CaffeineLogCard: View {
                     }
                 }
             }
+            .disabled(live.remoteSource != nil)
+            .opacity(live.remoteSource != nil ? StrandPalette.disabledOpacity : 1)
         }
         .onReceive(ticker) { tick = $0 }
     }
@@ -279,6 +287,7 @@ struct CaffeineLogCard: View {
                     .foregroundStyle(StrandPalette.textPrimary)
                 Spacer()
                 Button {
+                    guard live.remoteSource == nil else { return }
                     store.remove(intake.id)
                 } label: {
                     Image(systemName: "minus.circle.fill")
@@ -303,6 +312,7 @@ struct CaffeineLogCard: View {
 
     private func logPill(_ label: LocalizedStringKey, hoursAgo: Int) -> some View {
         pillButton(label, selected: false) {
+            guard live.remoteSource == nil else { return }
             let mg = Double(mgDraft.trimmingCharacters(in: .whitespaces))   // nil if blank/invalid
             let at = Calendar.current.date(byAdding: .hour, value: -hoursAgo, to: tick) ?? tick
             store.log(at: at, mg: mg)

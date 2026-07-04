@@ -20,7 +20,7 @@ enum AppleWatchDevice {
 
     /// The registry id + sample `deviceId` the watch feeds. Matches `Repository.appleHealthSource`
     /// so the engines and multi-source selection treat watch days exactly like the existing import.
-    static let deviceId = Repository.appleHealthSource   // "apple-health"
+    static let deviceId = "apple-health"
 
     /// How far back we look for "recent" data before deciding the watch is genuinely in use. A user
     /// who imported a one-off export months ago shouldn't get a live "Apple Watch" device; a watch

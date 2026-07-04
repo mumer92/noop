@@ -26,6 +26,7 @@ import WhoopStore
 
 struct MindSection: View {
     @EnvironmentObject var repo: Repository
+    @EnvironmentObject var live: LiveState
 
     /// Today's stored mood (1–5); nil until the user checks in.
     @State private var todayMood: Int?
@@ -44,8 +45,15 @@ struct MindSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             SectionHeader("Mind", overline: "Mood, alongside your body's signals")
+            if live.remoteSource != nil {
+                MirroringManagedNotice(
+                    title: "Mood managed on iPhone",
+                    message: "Mood check-ins are mirrored from the iPhone. Edit them there while this Mac is mirroring.")
+            }
 
             checkInCard
+                .disabled(live.remoteSource != nil)
+                .opacity(live.remoteSource != nil ? StrandPalette.disabledOpacity : 1)
 
             if !lines.isEmpty {
                 insightsCard
@@ -127,7 +135,7 @@ struct MindSection: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Today's mood: \(MoodStore.label(for: mood)), \(mood) of 5")
             Spacer()
-            Button("Edit") { editing = true }
+            Button("Edit") { if live.remoteSource == nil { editing = true } }
                 .buttonStyle(.plain)
                 .font(StrandFont.caption)
                 .foregroundStyle(StrandPalette.restBright)
@@ -139,6 +147,7 @@ struct MindSection: View {
     /// Persist the tap, collapse the card, and refresh the insight lines (today's
     /// point may shift a correlation).
     private func select(_ value: Int) {
+        guard live.remoteSource == nil else { return }
         todayMood = value
         editing = false
         Task {

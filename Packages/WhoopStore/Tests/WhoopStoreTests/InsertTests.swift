@@ -22,6 +22,24 @@ final class InsertTests: XCTestCase {
         XCTAssertEqual(n.battery, 1)
     }
 
+    func testSyncRevisionTracksContentInsertsOnly() async throws {
+        let store = try await WhoopStore.inMemory()
+        let initialRevision = try await store.syncRevision()
+        XCTAssertEqual(initialRevision, 0)
+
+        try await store.upsertDevice(id: "dev1", mac: "AA:BB", name: "Strap")
+        let afterDeviceUpsert = try await store.syncRevision()
+        XCTAssertEqual(afterDeviceUpsert, 0, "device heartbeat/upsert should not force history sync")
+
+        _ = try await store.insert(sampleStreams(), deviceId: "dev1")
+        let afterInsert = try await store.syncRevision()
+        XCTAssertGreaterThan(afterInsert, 0)
+
+        _ = try await store.insert(sampleStreams(), deviceId: "dev1")
+        let afterDuplicate = try await store.syncRevision()
+        XCTAssertEqual(afterDuplicate, afterInsert, "idempotent duplicate insert should not bump")
+    }
+
     func testInsertIsIdempotentByNaturalKey() async throws {
         let store = try await WhoopStore.inMemory()
         try await store.upsertDevice(id: "dev1", mac: nil, name: nil)

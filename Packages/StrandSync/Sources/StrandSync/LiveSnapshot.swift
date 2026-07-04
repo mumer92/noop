@@ -1,5 +1,36 @@
 import Foundation
 
+/// A manual workout/session running on the iPhone, mirrored to the Mac so remote commands have visible
+/// state there even though the Mac is not the device recording samples into the database.
+public struct LiveSessionSnapshot: Codable, Sendable, Equatable {
+    public var sport: String
+    public var startTs: Double
+    public var elapsed: Double
+    public var currentHr: Int?
+    public var liveStrain: Double
+    public var avgHr: Int
+    public var peakHr: Int
+    public var lastCommandAck: String?
+
+    public init(sport: String,
+                startTs: Double,
+                elapsed: Double,
+                currentHr: Int? = nil,
+                liveStrain: Double = 0,
+                avgHr: Int = 0,
+                peakHr: Int = 0,
+                lastCommandAck: String? = nil) {
+        self.sport = sport
+        self.startTs = startTs
+        self.elapsed = elapsed
+        self.currentHr = currentHr
+        self.liveStrain = liveStrain
+        self.avgHr = avgHr
+        self.peakHr = peakHr
+        self.lastCommandAck = lastCommandAck
+    }
+}
+
 /// The iPhone's real-time state, streamed to the Mac ~1 Hz over the live channel so the Mac can show
 /// live HR + "Connected via iPhone" + battery. JSON-encoded on the wire. Pure value type — the app maps
 /// its `LiveState` to/from this.
@@ -26,6 +57,8 @@ public struct LiveSnapshot: Codable, Sendable, Equatable {
     public var batteryRemainingHours: Double?
     public var batterySource: String?   // "measured" | "rated"
     public var batteryCurrentSoc: Double?
+    public var session: LiveSessionSnapshot?
+    public var lastCommandAck: String?
     public var ts: Double             // epoch seconds, for ordering / staleness
 
     public init(heartRate: Int? = nil, connected: Bool = false, bonded: Bool = false,
@@ -34,7 +67,8 @@ public struct LiveSnapshot: Codable, Sendable, Equatable {
                 lastEvent: String? = nil, liveFeedActive: Bool = false, advertisingName: String? = nil,
                 strapFirmware: String? = nil, pairingHint: String? = nil, reconnectGuide: String? = nil,
                 standardHRMode: String? = nil, batteryRemainingHours: Double? = nil,
-                batterySource: String? = nil, batteryCurrentSoc: Double? = nil, ts: Double = 0) {
+                batterySource: String? = nil, batteryCurrentSoc: Double? = nil,
+                session: LiveSessionSnapshot? = nil, lastCommandAck: String? = nil, ts: Double = 0) {
         self.heartRate = heartRate; self.connected = connected; self.bonded = bonded
         self.encryptedBond = encryptedBond
         self.batteryPct = batteryPct; self.charging = charging; self.worn = worn
@@ -45,6 +79,8 @@ public struct LiveSnapshot: Codable, Sendable, Equatable {
         self.reconnectGuide = reconnectGuide; self.standardHRMode = standardHRMode
         self.batteryRemainingHours = batteryRemainingHours; self.batterySource = batterySource
         self.batteryCurrentSoc = batteryCurrentSoc
+        self.session = session
+        self.lastCommandAck = lastCommandAck
         self.ts = ts
     }
 

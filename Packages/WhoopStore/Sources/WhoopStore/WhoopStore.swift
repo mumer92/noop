@@ -6,7 +6,7 @@ import WhoopProtocol
 /// transient, compressed, prunable outbox. Built on GRDB/SQLite.
 public enum WhoopStoreInfo {
     /// Bumped whenever the migrator gains a new migration.
-    public static let schemaVersion = 18
+    public static let schemaVersion = 22
 }
 
 /// WhoopStore is an `actor`: its public API is `async`, and all GRDB work runs on the
@@ -118,6 +118,36 @@ public actor WhoopStore {
     @inline(__always)
     func syncWrite<T>(_ block: (Database) throws -> T) throws -> T {
         try dbWriter.write(block)
+    }
+
+    // MARK: - Sync revision
+
+    static let syncRevisionKey = "syncRevision"
+
+    static func currentSyncRevision(_ db: Database) throws -> UInt64 {
+        let value = try Int64.fetchOne(db, sql: """
+            SELECT value FROM storeMeta WHERE key = ?
+            """, arguments: [syncRevisionKey]) ?? 0
+        return UInt64(max(0, value))
+    }
+
+    @discardableResult
+    static func bumpSyncRevision(_ db: Database, ifChanged changed: Int) throws -> UInt64 {
+        guard changed > 0 else { return try currentSyncRevision(db) }
+        try db.execute(sql: """
+            INSERT INTO storeMeta (key, value) VALUES (?, 0)
+            ON CONFLICT(key) DO NOTHING
+            """, arguments: [syncRevisionKey])
+        try db.execute(sql: """
+            UPDATE storeMeta SET value = value + 1 WHERE key = ?
+            """, arguments: [syncRevisionKey])
+        return try currentSyncRevision(db)
+    }
+
+    /// Monotonic revision bumped by content-changing writes. Local Sync uses this as the live
+    /// history token so paired Macs pull only after the iPhone database actually changes.
+    public func syncRevision() async throws -> UInt64 {
+        try syncRead { db in try Self.currentSyncRevision(db) }
     }
 
     // MARK: - Maintenance

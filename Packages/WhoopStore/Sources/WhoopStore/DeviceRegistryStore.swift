@@ -30,27 +30,36 @@ public struct DeviceRegistryStore: Sendable {
     }
 
     public func add(_ d: PairedDevice) throws {
-        try dbQueue.write { db in try Self.upsert(db, d) }
+        try dbQueue.write { db in
+            try Self.upsert(db, d)
+            try WhoopStore.bumpSyncRevision(db, ifChanged: db.changesCount)
+        }
     }
 
     /// I1: promoting one device demotes whatever was active, atomically (single write transaction).
     public func setActive(_ id: String) throws {
         try dbQueue.write { db in
+            var changed = 0
             try db.execute(sql: "UPDATE pairedDevice SET status = 'paired' WHERE status = 'active'")
+            changed += db.changesCount
             try db.execute(sql: "UPDATE pairedDevice SET status = 'active', lastSeenAt = ? WHERE id = ?",
                            arguments: [Int(Date().timeIntervalSince1970), id])
+            changed += db.changesCount
+            try WhoopStore.bumpSyncRevision(db, ifChanged: changed)
         }
     }
 
     public func archive(_ id: String) throws {
         try dbQueue.write { db in
             try db.execute(sql: "UPDATE pairedDevice SET status = 'archived' WHERE id = ?", arguments: [id])
+            try WhoopStore.bumpSyncRevision(db, ifChanged: db.changesCount)
         }
     }
 
     public func rename(_ id: String, nickname: String?) throws {
         try dbQueue.write { db in
             try db.execute(sql: "UPDATE pairedDevice SET nickname = ? WHERE id = ?", arguments: [nickname, id])
+            try WhoopStore.bumpSyncRevision(db, ifChanged: db.changesCount)
         }
     }
 
@@ -60,6 +69,7 @@ public struct DeviceRegistryStore: Sendable {
         try dbQueue.write { db in
             try db.execute(sql: "UPDATE pairedDevice SET peripheralId = ? WHERE id = ?",
                            arguments: [peripheralId, id])
+            try WhoopStore.bumpSyncRevision(db, ifChanged: db.changesCount)
         }
     }
 
@@ -89,9 +99,12 @@ public struct DeviceRegistryStore: Sendable {
     /// is created unconditionally by the migrator, so the set is stable.
     public func deleteAllData(deviceId: String) throws {
         try dbQueue.write { db in
+            var changed = 0
             for table in Self.deviceScopedTables {
                 try db.execute(sql: "DELETE FROM \(table) WHERE deviceId = ?", arguments: [deviceId])
+                changed += db.changesCount
             }
+            try WhoopStore.bumpSyncRevision(db, ifChanged: changed)
         }
     }
 
@@ -104,6 +117,7 @@ public struct DeviceRegistryStore: Sendable {
                 INSERT INTO dayOwnership (day, deviceId, locked) VALUES (?, ?, ?)
                 ON CONFLICT(day) DO UPDATE SET deviceId = excluded.deviceId, locked = excluded.locked
             """, arguments: [day, deviceId, locked ? 1 : 0])
+            try WhoopStore.bumpSyncRevision(db, ifChanged: db.changesCount)
         }
     }
 

@@ -8,7 +8,7 @@ import StrandAnalytics
 @MainActor
 extension LiveState {
     /// Build a snapshot of the current live state to stream to a paired Mac.
-    func snapshot() -> LiveSnapshot {
+    func snapshot(session: LiveSessionSnapshot? = nil, commandAck: String? = nil) -> LiveSnapshot {
         LiveSnapshot(
             heartRate: heartRate,
             connected: connected,
@@ -30,6 +30,8 @@ extension LiveState {
             batteryRemainingHours: batteryEstimate?.remainingHours,
             batterySource: batteryEstimate?.source.rawValue,
             batteryCurrentSoc: batteryEstimate?.currentSoc,
+            session: session,
+            lastCommandAck: commandAck,
             ts: Date().timeIntervalSince1970
         )
     }
@@ -60,6 +62,8 @@ extension LiveState {
         } else {
             relayedBatteryEstimate = nil
         }
+        remoteSession = s.session
+        remoteCommandAck = s.lastCommandAck ?? s.session?.lastCommandAck
         remoteSource = source
     }
 
@@ -82,6 +86,8 @@ extension LiveState {
         reconnectGuide = nil
         standardHRMode = nil
         relayedBatteryEstimate = nil
+        remoteSession = nil
+        remoteCommandAck = nil
         remoteSource = nil
     }
 }

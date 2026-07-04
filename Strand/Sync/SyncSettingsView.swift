@@ -32,9 +32,6 @@ struct SyncSettingsView: View {
                     enterCodeCard
                     #endif
                     statusCard
-                    #if os(macOS)
-                    if coordinator.pairedLabel != nil { remoteControlCard }
-                    #endif
                     if coordinator.pairedLabel != nil {
                         NoopButton("Unpair", kind: .destructive) {
                             coordinator.unpair(); enabled = false; shownCode = nil
@@ -88,24 +85,6 @@ struct SyncSettingsView: View {
     }
     #endif
 
-    #if os(macOS)
-    /// Send actions to the iPhone to run on the strap (the band is bonded to the phone).
-    private var remoteControlCard: some View {
-        NoopCard {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("REMOTE CONTROL").strandOverline()
-                Text("Send an action to your iPhone to run on the strap.")
-                    .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
-                HStack(spacing: 10) {
-                    NoopButton("Buzz strap", kind: .primary) { coordinator.sendCommand(.buzz) }
-                    NoopButton("Start workout", kind: .secondary) { coordinator.sendCommand(.startWorkout(sport: "Workout")) }
-                    NoopButton("End", kind: .tertiary) { coordinator.sendCommand(.endWorkout) }
-                }
-            }
-        }
-    }
-    #endif
-
     private var statusCard: some View {
         NoopCard {
             VStack(alignment: .leading, spacing: 8) {
@@ -135,6 +114,44 @@ struct SyncSettingsView: View {
         case .upToDate:       return "Up to date"
         case .needsRestart:   return "Synced — restart NOOP to load it"
         case .error(let m):   return m
+        }
+    }
+}
+
+struct MirroringManagedNotice: View {
+    var title: LocalizedStringKey = "Mirroring from iPhone"
+    var message: LocalizedStringKey = "This Mac is using the iPhone's live strap connection. Manage pairing, devices, and writable settings on the iPhone while mirroring."
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "iphone.radiowaves.left.and.right")
+                .foregroundStyle(StrandPalette.accent)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Text(message)
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(NoopMetrics.space3)
+        .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(StrandPalette.accent.opacity(0.35), lineWidth: 1))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct RelayedMirrorBanner: View {
+    @EnvironmentObject private var live: LiveState
+
+    var body: some View {
+        if live.remoteSource != nil {
+            MirroringManagedNotice()
         }
     }
 }

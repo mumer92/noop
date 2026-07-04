@@ -4,6 +4,7 @@ import AppKit
 #endif
 import StrandDesign
 import StrandAnalytics
+import StrandSync
 import WhoopProtocol
 import WhoopStore
 
@@ -76,6 +77,7 @@ struct LiveView: View {
                 // re-bond), so connects loop on "Peer removed pairing information". Show the re-pair steps
                 // right here instead of silently retrying. (5/MG firmware reset, 2026-06)
                 if let guide = live.reconnectGuide { reconnectGuideBanner(guide) }
+                if live.remoteSource != nil { MirroringManagedNotice() }
                 // Bond-refused guidance, shown right here on Live where people actually connect (it
                 // also appears in Settings). A 5/MG strap still bonded to the WHOOP app refuses pairing
                 // with "Encryption is insufficient" — this tells the user to free it and re-pair.
@@ -85,7 +87,7 @@ struct LiveView: View {
                 // an offline user saw only inert copy up top. Gated purely on `!live.connected`, so it
                 // disappears the instant the radio connects. Shared with macOS — it reuses `scanButton`,
                 // which the wide layout already renders in `controls`.
-                if !live.connected { offlineConnectCallout }
+                if !live.connected && live.remoteSource == nil { offlineConnectCallout }
                 bodyConsole
                 // Low-bandwidth fallback note (#80): the radio couldn't sustain the WHOOP 4 R10/R11 raw
                 // realtime burst, so live HR is riding the standard BLE Heart-Rate profile instead. Live HR
@@ -99,7 +101,7 @@ struct LiveView: View {
                 // Show the strap picker whenever we're not actively streaming, so a user with both a
                 // WHOOP 4 and a 5/MG can switch between them. (It used to hide once `bonded`, which is
                 // sticky across disconnects — so after the first pairing the picker vanished for good.)
-                if !activeConnection { modelPicker }
+                if !activeConnection && live.remoteSource == nil { modelPicker }
                 controls
                 manageDevicesRow
                 LiveLogCard()
@@ -115,11 +117,17 @@ struct LiveView: View {
         .onChangeCompat(of: live.bonded) { _ in reconnectLiveSession() }
         .onChangeCompat(of: live.connected) { _ in reconnectLiveSession() }
         // Live workout mode (#238): open the in-exercise screen the moment a workout starts.
-        .onChangeCompat(of: model.activeWorkout != nil) { active in if active { showLiveWorkout = true } }
+        .onChangeCompat(of: model.activeWorkout != nil || live.remoteSession != nil) { active in if active { showLiveWorkout = true } }
         .sheet(isPresented: $showLiveWorkout) {
-            LiveWorkoutView(onClose: { showLiveWorkout = false })
-                .environmentObject(model)
-                .environmentObject(live)
+            if model.activeWorkout != nil {
+                LiveWorkoutView(onClose: { showLiveWorkout = false })
+                    .environmentObject(model)
+                    .environmentObject(live)
+            } else if live.remoteSession != nil {
+                RemoteLiveWorkoutView(onClose: { showLiveWorkout = false })
+                    .environmentObject(model)
+                    .environmentObject(live)
+            }
         }
         // Pick a named sport before starting (#519) — the live workout view then opens
         // off the activeWorkout change above, so no extra navigation is needed here.
@@ -274,6 +282,8 @@ struct LiveView: View {
             SectionHeader("Session", overline: "Record or inspect the current stream")
             if let w = model.activeWorkout {
                 activeWorkoutCard(w)
+            } else if let remote = live.remoteSession {
+                remoteWorkoutCard(remote)
             } else {
                 card {
                     ViewThatFits(in: .horizontal) {
@@ -330,8 +340,10 @@ struct LiveView: View {
             NoopButton("HRV reading", systemImage: "waveform.path.ecg", kind: .secondary) {
                 showHRVSnapshot = true
             }
-            .disabled(!activeConnection)
-            .help(activeConnection
+            .disabled(!activeConnection || live.remoteSource != nil)
+            .help(live.remoteSource != nil
+                  ? "Take HRV readings on the iPhone while this Mac is mirroring."
+                  : activeConnection
                   ? "Take a 60-second seated HRV reading from the live R-R stream."
                   : "Connect your strap first. The reading needs the live R-R stream.")
         }
@@ -367,6 +379,61 @@ struct LiveView: View {
                 }
             }
         }
+    }
+
+    private func remoteWorkoutCard(_ w: LiveSessionSnapshot) -> some View {
+        NoopCard(tint: StrandPalette.effortColor) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Circle().fill(StrandPalette.metricRose).frame(width: 8, height: 8)
+                    Text("RECORDING ON IPHONE").font(StrandFont.overline)
+                        .tracking(StrandFont.overlineTracking).foregroundStyle(StrandPalette.metricRose)
+                    Spacer()
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        Text(Self.elapsed(since: Date(timeIntervalSince1970: w.startTs)))
+                            .font(StrandFont.number(17)).monospacedDigit()
+                            .foregroundStyle(StrandPalette.textPrimary)
+                    }
+                }
+                Text(w.sport)
+                    .font(StrandFont.headline)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                HStack(spacing: NoopMetrics.gap) {
+                    workoutStat("HR", (w.currentHr ?? model.bpm).map { "\($0)" } ?? "—",
+                                tint: (w.currentHr ?? model.bpm) == nil ? StrandPalette.textPrimary : StrandPalette.metricRose)
+                    workoutStat("Avg", w.avgHr > 0 ? "\(w.avgHr)" : "—")
+                    workoutStat("Peak", w.peakHr > 0 ? "\(w.peakHr)" : "—")
+                    workoutStat("Effort", UnitFormatter.effortDisplay(w.liveStrain, scale: effortScale),
+                                tint: StrandPalette.strainColor(w.liveStrain))
+                }
+                HStack(spacing: NoopMetrics.rowSpacing) {
+                    NoopButton("Open live view", systemImage: "rectangle.expand.vertical",
+                               kind: .secondary, fullWidth: true) {
+                        showLiveWorkout = true
+                    }
+                    NoopButton("End workout", systemImage: "stop.circle.fill",
+                               kind: .destructive, fullWidth: true) {
+                        model.endWorkout()
+                    }
+                }
+                if let ack = live.remoteCommandAck ?? w.lastCommandAck {
+                    Label(ack, systemImage: "checkmark.circle.fill")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .lineLimit(2)
+                }
+            }
+        }
+    }
+
+    private func workoutStat(_ title: String, _ value: String, tint: Color = StrandPalette.textPrimary) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title.uppercased()).font(StrandFont.overline).tracking(StrandFont.overlineTracking)
+                .foregroundStyle(StrandPalette.textSecondary)
+            Text(value).font(StrandFont.number(17))
+                .foregroundStyle(tint).lineLimit(1).minimumScaleFactor(0.6)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func workoutSavedRow(_ row: WorkoutRow) -> some View {
@@ -549,38 +616,44 @@ struct LiveView: View {
     /// the user to the first-class Devices manager and stays one tap away in every connection state,
     /// naming the active band so the link reads in context. The shell routes the request via `NavRouter` —
     /// macOS selects the Devices sidebar item, iOS presents the Devices screen.
-    private var manageDevicesRow: some View {
-        Button { router.openDevices() } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "badge.plus.radiowaves.right")
-                    .font(StrandFont.headline)
-                    .foregroundStyle(StrandPalette.accent)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Manage devices")
-                        .font(StrandFont.subhead)
-                        .foregroundStyle(StrandPalette.textPrimary)
-                    Text(manageDevicesDetail)
+    @ViewBuilder private var manageDevicesRow: some View {
+        if live.remoteSource != nil {
+            MirroringManagedNotice(
+                title: "Devices managed on iPhone",
+                message: "Pairing, switching, renaming, and removing devices happen on the iPhone while this Mac is mirroring.")
+        } else {
+            Button { router.openDevices() } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "badge.plus.radiowaves.right")
+                        .font(StrandFont.headline)
+                        .foregroundStyle(StrandPalette.accent)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Manage devices")
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Text(manageDevicesDetail)
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
                         .font(StrandFont.footnote)
-                        .foregroundStyle(StrandPalette.textSecondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .accessibilityHidden(true)
                 }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(StrandFont.footnote)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                    .accessibilityHidden(true)
+                .padding(NoopMetrics.space3)
+                .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                .contentShape(Rectangle())
             }
-            .padding(NoopMetrics.space3)
-            .background(StrandPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(StrandPalette.hairline, lineWidth: 1))
-            .contentShape(Rectangle())
+            .buttonStyle(LiquidPressStyle())
+            .accessibilityLabel("Manage devices")
+            .accessibilityHint("Opens the Devices screen, where you pair and switch bands.")
         }
-        .buttonStyle(LiquidPressStyle())
-        .accessibilityLabel("Manage devices")
-        .accessibilityHint("Opens the Devices screen, where you pair and switch bands.")
     }
 
     /// One-line subtitle for the Manage-devices row — names the active band and reads correctly whether
@@ -593,26 +666,37 @@ struct LiveView: View {
 
     // MARK: - Controls
 
-    private var controls: some View {
-        // Three equal thirds can't hold all three labels at a legible size on a phone — the longest
-        // ("Scan & Connect") truncates to "Scan &…" even after shrink-to-fit (#175). So on iOS the
-        // primary action takes a full-width row and the two secondary actions share the row beneath;
-        // macOS keeps the single three-up row, where the window is always wide enough. (#175)
-        #if os(iOS)
-        VStack(spacing: NoopMetrics.rowSpacing) {
-            scanButton
+    @ViewBuilder private var controls: some View {
+        if live.remoteSource != nil {
             HStack(spacing: NoopMetrics.rowSpacing) {
+                buzzButton
+                NoopButton("Refresh", systemImage: "arrow.clockwise",
+                           kind: .secondary, fullWidth: true) {
+                    model.getBattery()
+                }
+                .disabled(!activeConnection)
+            }
+        } else {
+            // Three equal thirds can't hold all three labels at a legible size on a phone — the longest
+            // ("Scan & Connect") truncates to "Scan &…" even after shrink-to-fit (#175). So on iOS the
+            // primary action takes a full-width row and the two secondary actions share the row beneath;
+            // macOS keeps the single three-up row, where the window is always wide enough. (#175)
+            #if os(iOS)
+            VStack(spacing: NoopMetrics.rowSpacing) {
+                scanButton
+                HStack(spacing: NoopMetrics.rowSpacing) {
+                    buzzButton
+                    disconnectButton
+                }
+            }
+            #else
+            HStack(spacing: NoopMetrics.rowSpacing) {
+                scanButton
                 buzzButton
                 disconnectButton
             }
+            #endif
         }
-        #else
-        HStack(spacing: NoopMetrics.rowSpacing) {
-            scanButton
-            buzzButton
-            disconnectButton
-        }
-        #endif
     }
 
     // The connect / buzz / disconnect controls, all routed through the unified NOOP button system:
@@ -661,7 +745,7 @@ struct LiveView: View {
     private func consumeActiveWorkoutRequest() {
         guard router.presentActiveWorkout else { return }
         router.presentActiveWorkout = false
-        if model.activeWorkout != nil { showLiveWorkout = true }
+        if model.activeWorkout != nil || live.remoteSession != nil { showLiveWorkout = true }
     }
 
     /// A fresh bond/connection landed while the Live tab is up: re-arm the BLE stream (Apple re-sends

@@ -40,7 +40,7 @@ final class MigrationTests: XCTestCase {
             let cols = try await store.columnNamesForTest(table: table)
             XCTAssertTrue(cols.contains("synced"), "\(table) missing synced column")
         }
-        XCTAssertEqual(WhoopStoreInfo.schemaVersion, 18)
+        XCTAssertEqual(WhoopStoreInfo.schemaVersion, 22)
     }
 
     /// v13 adds the `userEdited` flag to sleepSession (user-corrected wake times survive re-sync).
@@ -62,5 +62,14 @@ final class MigrationTests: XCTestCase {
         let store = try await WhoopStore.inMemory()
         let cols = try await store.columnNamesForTest(table: "pairedDevice")
         XCTAssertTrue(cols.contains("peripheralId"), "pairedDevice missing v16 peripheralId column")
+    }
+
+    /// v22 adds the local-sync revision metadata table.
+    func testV22AddsStoreMetaSyncRevision() async throws {
+        let store = try await WhoopStore.inMemory()
+        let tables = try await store.tableNames()
+        XCTAssertTrue(tables.contains("storeMeta"))
+        let revision = try await store.syncRevision()
+        XCTAssertEqual(revision, 0)
     }
 }

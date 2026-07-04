@@ -420,6 +420,20 @@ extension WhoopStore {
                 t.primaryKey(["deviceId", "ts"])
             }
         }
+
+        // v22: local-sync content revision. A paired Mac should not infer history freshness from Bonjour
+        // rediscovery or from the dashboard refresh counter; it needs a monotonic token tied to actual
+        // database mutations on the authoritative iPhone. `storeMeta.syncRevision` is bumped by the
+        // mutating store APIs when rows change, and the live sync channel advertises that value.
+        migrator.registerMigration("v22-sync-revision") { db in
+            try db.create(table: "storeMeta") { t in
+                t.column("key", .text).primaryKey()
+                t.column("value", .integer).notNull()
+            }
+            try db.execute(sql: """
+                INSERT INTO storeMeta (key, value) VALUES (?, 0)
+                """, arguments: [WhoopStore.syncRevisionKey])
+        }
         return migrator
     }
 }

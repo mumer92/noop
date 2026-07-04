@@ -50,6 +50,13 @@ enum SyncSettingsBridge {
         d.removeObject(forKey: backupKey)
     }
 
+    /// If pairing disappeared outside the normal unpair path (for example the Keychain item was cleared),
+    /// restore the Mac's backed-up local settings on launch instead of leaving the iPhone profile stranded.
+    static func restoreIfStranded(profile: ProfileStore) {
+        guard SyncPairing.load() == nil, d.data(forKey: backupKey) != nil else { return }
+        restoreOwn(profile: profile)
+    }
+
     private static func write(_ s: SyncSettings, to profile: ProfileStore) {
         // ProfileStore @Published setters persist to UserDefaults + publish, so readers update live.
         profile.age = s.age

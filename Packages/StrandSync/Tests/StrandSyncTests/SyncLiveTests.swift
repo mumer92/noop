@@ -13,7 +13,13 @@ import Network
                          advertisingName: "NOOP", strapFirmware: "1.2.3", pairingHint: "hint",
                          reconnectGuide: "guide", standardHRMode: "fallback",
                          batteryRemainingHours: 41.5, batterySource: "measured",
-                         batteryCurrentSoc: 86, ts: 123.5)
+                         batteryCurrentSoc: 86,
+                         session: LiveSessionSnapshot(sport: "Run", startTs: 100, elapsed: 23,
+                                                      currentHr: 142, liveStrain: 12.3,
+                                                      avgHr: 136, peakHr: 151,
+                                                      lastCommandAck: "startWorkout"),
+                         lastCommandAck: "Buzz sent",
+                         ts: 123.5)
     #expect(LiveSnapshot(data: s.encoded()) == s)
 }
 
