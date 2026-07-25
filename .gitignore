@@ -25,6 +25,10 @@ Strand.xcodeproj/project.xcworkspace/xcshareddata/*
 Strand.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
 !Strand.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 build/
+# XcodeBuildMCP / xcodebuild derived-data trees for the local device + mac builds.
+# These hold SPM checkouts and .app bundles (hundreds of MB) — never commit them.
+build-ios/
+build-mac/
 DerivedData/
 .build/
 Packages/*/.build/
